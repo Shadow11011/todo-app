@@ -54,7 +54,7 @@ export default function Home() {
 
     // 3. Send to n8n webhook for AI enhancement
     try {
-      await fetch("http://localhost:5678/webhook/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277", {
+      await fetch("http://localhost:5678/webhook-test/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
