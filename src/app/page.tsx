@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, FormEvent } from "react";
-import { supabase } from ".../lib/supabase";
+import { supabase } from "../lib/supabase";
 
 type Todo = {
   id: string;
