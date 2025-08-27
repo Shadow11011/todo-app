@@ -26,20 +26,39 @@ export default function Home() {
     else setTodos(data as Todo[]);
   };
 
-  const addTodo = async () => {
-    if (!newTask) return;
+const addTodo = async () => {
+  if (!newTask) return;
 
-    const { data, error } = await supabase
-      .from("todos")
-      .insert([{ title: newTask, completed: false }])
-      .select();
+  // 1. Insert task into Supabase
+  const { data, error } = await supabase
+    .from("todos")
+    .insert([{ title: newTask, completed: false }])
+    .select();
 
-    if (error) console.error("Error adding todo:", error.message);
-    else {
-      setTodos([...todos, ...(data as Todo[])]);
-      setNewTask("");
-    }
-  };
+  if (error) {
+    console.error("Error adding todo:", error.message);
+    return;
+  }
+
+  // 2. Update local state
+  setTodos([...todos, ...(data as Todo[])]);
+  setNewTask("");
+
+  // 3. Send task to N8N for AI enhancement
+  try {
+    await fetch("http://localhost:5678/webhook-test/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: data[0].id,      // the Supabase task ID
+        title: data[0].title // original task title
+      }),
+    });
+  } catch (err) {
+    console.error("Error sending to N8N:", err);
+  }
+};
+
 
   const toggleTodo = async (id: string, current: boolean) => {
     const { error } = await supabase.from("todos").update({ completed: !current }).eq("id", id);
