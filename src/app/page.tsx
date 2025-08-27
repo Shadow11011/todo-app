@@ -1,4 +1,4 @@
-"use client"; // Required for client-side hooks in Next.js App Router
+"use client";
 
 import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
@@ -13,19 +13,17 @@ type Todo = {
 export default function Home() {
   const [todos, setTodos] = useState<Todo[]>([]);
   const [newTask, setNewTask] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState("");
 
-  // Fetch tasks when the page loads
   useEffect(() => {
     fetchTodos();
   }, []);
 
   const fetchTodos = async () => {
     const { data, error } = await supabase.from("todos").select("*").order("created_at", { ascending: true });
-    if (error) {
-      console.error("Error fetching todos:", error.message);
-    } else {
-      setTodos(data as Todo[]);
-    }
+    if (error) console.error("Error fetching todos:", error.message);
+    else setTodos(data as Todo[]);
   };
 
   const addTodo = async () => {
@@ -36,25 +34,38 @@ export default function Home() {
       .insert([{ title: newTask, completed: false }])
       .select();
 
-    if (error) {
-      console.error("Error adding todo:", error.message);
-    } else {
+    if (error) console.error("Error adding todo:", error.message);
+    else {
       setTodos([...todos, ...(data as Todo[])]);
       setNewTask("");
     }
   };
 
   const toggleTodo = async (id: string, current: boolean) => {
-    const { error } = await supabase
-      .from("todos")
-      .update({ completed: !current })
-      .eq("id", id);
+    const { error } = await supabase.from("todos").update({ completed: !current }).eq("id", id);
+    if (error) console.error("Error updating todo:", error.message);
+    else fetchTodos();
+  };
 
-    if (error) {
-      console.error("Error updating todo:", error.message);
-    } else {
+  const startEdit = (id: string, title: string) => {
+    setEditingId(id);
+    setEditingTitle(title);
+  };
+
+  const saveEdit = async () => {
+    if (!editingId || !editingTitle) return;
+    const { error } = await supabase.from("todos").update({ title: editingTitle }).eq("id", editingId);
+    if (error) console.error("Error editing todo:", error.message);
+    else {
+      setEditingId(null);
+      setEditingTitle("");
       fetchTodos();
     }
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditingTitle("");
   };
 
   const tasksRemaining = todos.filter(todo => !todo.completed).length;
@@ -87,16 +98,51 @@ export default function Home() {
             key={todo.id}
             className="flex items-center justify-between bg-white p-4 rounded-xl shadow hover:shadow-md transition"
           >
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-1">
               <input
                 type="checkbox"
                 checked={todo.completed}
                 onChange={() => toggleTodo(todo.id, todo.completed)}
                 className="w-5 h-5 accent-blue-500"
               />
-              <span className={`text-gray-800 ${todo.completed ? "line-through text-gray-400" : ""}`}>
-                {todo.title}
-              </span>
+              {editingId === todo.id ? (
+                <input
+                  value={editingTitle}
+                  onChange={(e) => setEditingTitle(e.target.value)}
+                  className="flex-1 border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              ) : (
+                <span className={`text-gray-800 ${todo.completed ? "line-through text-gray-400" : ""}`}>
+                  {todo.title}
+                </span>
+              )}
+            </div>
+
+            {/* Buttons */}
+            <div className="flex gap-2">
+              {editingId === todo.id ? (
+                <>
+                  <button
+                    onClick={saveEdit}
+                    className="bg-green-500 hover:bg-green-600 text-white px-3 py-1 rounded transition"
+                  >
+                    Save
+                  </button>
+                  <button
+                    onClick={cancelEdit}
+                    className="bg-gray-300 hover:bg-gray-400 text-gray-800 px-3 py-1 rounded transition"
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={() => startEdit(todo.id, todo.title)}
+                  className="bg-yellow-400 hover:bg-yellow-500 text-white px-3 py-1 rounded transition"
+                >
+                  Edit
+                </button>
+              )}
             </div>
           </li>
         ))}
@@ -104,4 +150,3 @@ export default function Home() {
     </main>
   );
 }
-
