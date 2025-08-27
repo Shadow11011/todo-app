@@ -248,29 +248,29 @@ export default function Home() {
           >
             {authMode === "login" ? "Login" : "Sign Up"}
           </button>
-          <p className="text-sm text-gray-400 text-center">
-            {authMode === "login" ? (
-              <>
-                Don't have an account?{" "}
-                <button
-                  onClick={() => setAuthMode("signup")}
-                  className="text-indigo-400 hover:underline"
-                >
-                  Sign up
-                </button>
-              </>
-            ) : (
-              <>
-                Already have an account?{" "}
-                <button
-                  onClick={() => setAuthMode("login")}
-                  className="text-indigo-400 hover:underline"
-                >
-                  Login
-                </button>
-              </>
-            )}
-          </p>
+         <p className="text-sm text-gray-400 text-center">
+  {authMode === "login" ? (
+    <>
+      Don&apos;t have an account?{" "}  {/* Fixed: Replaced ' with &apos; */}
+      <button
+        onClick={() => setAuthMode("signup")}
+        className="text-indigo-400 hover:underline"
+      >
+        Sign up
+      </button>
+    </>
+  ) : (
+    <>
+      Already have an account?{" "}
+      <button
+        onClick={() => setAuthMode("login")}
+        className="text-indigo-400 hover:underline"
+      >
+        Login
+      </button>
+    </>
+  )}
+</p>
         </div>
       </main>
     );
