@@ -26,8 +26,7 @@ export default function Home() {
   const [editDescription, setEditDescription] = useState("");
 
   // --- Delete Confirmation State ---
-  const [showDeleteModal, setShowDeleteModal] = useState(false);
-  const [todoToDelete, setTodoToDelete] = useState<Todo | null>(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
 
   // --- Chatbot State ---
   const [chatOpen, setChatOpen] = useState(false);
@@ -84,7 +83,6 @@ export default function Home() {
     setNewTitle("");
     setNewDescription("");
 
-    // Call webhook for todo creation
     callTodoWebhook("CREATE", newTodo);
   };
 
@@ -95,11 +93,10 @@ export default function Home() {
       console.error("Toggle error:", error.message);
       return;
     }
-    
+
     const updatedTodo = { ...todos.find(t => t.id === id), completed: !completed } as Todo;
     setTodos((prev) => prev.map((t) => (t.id === id ? updatedTodo : t)));
-    
-    // Call webhook for todo toggle
+
     callTodoWebhook("TOGGLE", updatedTodo);
   };
 
@@ -117,48 +114,34 @@ export default function Home() {
       console.error("Update error:", error.message);
       return;
     }
-    
+
     const updatedTodo = { ...todos.find(t => t.id === id), title: editTitle, description: editDescription } as Todo;
     setTodos((prev) =>
       prev.map((t) => (t.id === id ? updatedTodo : t))
     );
     setEditingId(null);
-    
-    // Call webhook for todo update
+
     callTodoWebhook("UPDATE", updatedTodo);
   };
 
-  // --- Confirm Delete ---
-  const confirmDelete = (todo: Todo) => {
-    setTodoToDelete(todo);
-    setShowDeleteModal(true);
-  };
+  // --- Delete Todo (confirmed) ---
+  const confirmDelete = async () => {
+    if (!deleteId) return;
 
-  // --- Delete Todo ---
-  const deleteTodo = async () => {
-    if (!todoToDelete) return;
-    
-    const { error } = await supabase.from("todos").delete().eq("id", todoToDelete.id);
-    
+    const { error } = await supabase.from("todos").delete().eq("id", deleteId);
     if (error) {
       console.error("Delete error:", error.message);
       return;
     }
-    
-    setTodos((prev) => prev.filter((t) => t.id !== todoToDelete.id));
-    
-    // Call webhook for todo deletion
-    callTodoWebhook("DELETE", todoToDelete);
-    
-    // Close the modal
-    setShowDeleteModal(false);
-    setTodoToDelete(null);
-  };
 
-  // --- Cancel Delete ---
-  const cancelDelete = () => {
-    setShowDeleteModal(false);
-    setTodoToDelete(null);
+    const deletedTodo = todos.find((t) => t.id === deleteId);
+    setTodos((prev) => prev.filter((t) => t.id !== deleteId));
+
+    if (deletedTodo) {
+      callTodoWebhook("DELETE", deletedTodo);
+    }
+
+    setDeleteId(null); // close modal
   };
 
   // --- Chatbot Send ---
@@ -252,7 +235,7 @@ export default function Home() {
               </div>
             ) : (
               <div className="flex justify-between items-start">
-                <div className="flex-1">
+                <div>
                   <h2 className={`font-semibold ${todo.completed ? "line-through text-gray-500" : "text-gray-100"}`}>
                     {todo.title}
                   </h2>
@@ -267,15 +250,15 @@ export default function Home() {
                   />
                   <button
                     onClick={() => startEdit(todo)}
-                    className="text-indigo-400 hover:text-indigo-300 text-sm p-1"
+                    className="text-indigo-400 hover:text-indigo-300 text-sm"
                   >
-                    ✎
+                    ✎ Edit
                   </button>
                   <button
-                    onClick={() => confirmDelete(todo)}
-                    className="text-red-400 hover:text-red-300 text-sm p-1"
+                    onClick={() => setDeleteId(todo.id)}
+                    className="text-red-400 hover:text-red-300 text-sm"
                   >
-                    🗑️
+                    🗑 Delete
                   </button>
                 </div>
               </div>
@@ -285,25 +268,23 @@ export default function Home() {
       </ul>
 
       {/* Delete Confirmation Modal */}
-      {showDeleteModal && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-          <div className="bg-slate-800 p-6 rounded-xl shadow-2xl border border-slate-700 max-w-md w-full mx-4">
-            <h3 className="text-xl font-semibold text-gray-100 mb-4">Confirm Delete</h3>
-            <p className="text-gray-300 mb-6">
-              Are you sure you want to delete <span className="font-medium">"{todoToDelete?.title}"</span>? This action cannot be undone.
-            </p>
-            <div className="flex gap-3 justify-end">
+      {deleteId && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-slate-800 rounded-2xl p-6 shadow-2xl border border-slate-700 w-80">
+            <h2 className="text-lg font-semibold text-red-400 mb-4">Confirm Delete</h2>
+            <p className="text-gray-300 mb-6">Are you sure you want to delete this todo?</p>
+            <div className="flex gap-3">
               <button
-                onClick={cancelDelete}
-                className="px-4 py-2 bg-slate-600 text-white rounded-lg hover:bg-slate-700 transition"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={deleteTodo}
-                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition"
+                onClick={confirmDelete}
+                className="flex-1 bg-red-600 text-white p-2 rounded-lg hover:bg-red-700 transition"
               >
                 Delete
+              </button>
+              <button
+                onClick={() => setDeleteId(null)}
+                className="flex-1 bg-slate-600 text-white p-2 rounded-lg hover:bg-slate-700 transition"
+              >
+                Cancel
               </button>
             </div>
           </div>
