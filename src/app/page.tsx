@@ -1,12 +1,14 @@
 "use client";
 
 import { useState, useEffect, FormEvent } from "react";
+import { supabase } from ".../lib/supabase";
 
 type Todo = {
   id: string;
   title: string;
   description: string;
   completed: boolean;
+  created_at?: string;
 };
 
 type ChatMessage = {
@@ -19,22 +21,21 @@ export default function Home() {
   const [todos, setTodos] = useState<Todo[]>([]);
   const [newTitle, setNewTitle] = useState("");
   const [newDescription, setNewDescription] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editDescription, setEditDescription] = useState("");
 
   // --- Chatbot State ---
   const [chatOpen, setChatOpen] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
-  // --- Fetch Todos ---
+  // --- Fetch Todos from Supabase ---
   useEffect(() => {
     const fetchTodos = async () => {
-      try {
-        const res = await fetch("/api/todos");
-        const data = await res.json();
-        setTodos(data);
-      } catch (err) {
-        console.error("Error fetching todos:", err);
-      }
+      const { data, error } = await supabase.from("todos").select("*").order("created_at", { ascending: false });
+      if (error) console.error("Error fetching todos:", error.message);
+      else setTodos(data || []);
     };
     fetchTodos();
   }, []);
@@ -44,31 +45,49 @@ export default function Home() {
     e.preventDefault();
     if (!newTitle.trim()) return;
 
-    const newTodo = {
-      id: Date.now().toString(),
-      title: newTitle,
-      description: newDescription,
-      completed: false,
-    };
+    const { data, error } = await supabase
+      .from("todos")
+      .insert([{ title: newTitle, description: newDescription, completed: false }])
+      .select();
 
-    setTodos((prev) => [...prev, newTodo]);
+    if (error) {
+      console.error("Insert error:", error.message);
+      return;
+    }
+
+    setTodos((prev) => [...data, ...prev]);
     setNewTitle("");
     setNewDescription("");
-
-    await fetch("http://localhost:5678/webhook-test/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(newTodo),
-    });
   };
 
   // --- Toggle Todo ---
-  const toggleTodo = (id: string) => {
+  const toggleTodo = async (id: string, completed: boolean) => {
+    const { error } = await supabase.from("todos").update({ completed: !completed }).eq("id", id);
+    if (error) {
+      console.error("Toggle error:", error.message);
+      return;
+    }
+    setTodos((prev) => prev.map((t) => (t.id === id ? { ...t, completed: !t.completed } : t)));
+  };
+
+  // --- Start Edit ---
+  const startEdit = (todo: Todo) => {
+    setEditingId(todo.id);
+    setEditTitle(todo.title);
+    setEditDescription(todo.description);
+  };
+
+  // --- Save Edit ---
+  const saveEdit = async (id: string) => {
+    const { error } = await supabase.from("todos").update({ title: editTitle, description: editDescription }).eq("id", id);
+    if (error) {
+      console.error("Update error:", error.message);
+      return;
+    }
     setTodos((prev) =>
-      prev.map((todo) =>
-        todo.id === id ? { ...todo, completed: !todo.completed } : todo
-      )
+      prev.map((t) => (t.id === id ? { ...t, title: editTitle, description: editDescription } : t))
     );
+    setEditingId(null);
   };
 
   // --- Chatbot Send ---
@@ -130,20 +149,60 @@ export default function Home() {
         {todos.map((todo) => (
           <li
             key={todo.id}
-            className="p-4 bg-slate-800 rounded-xl shadow-lg flex justify-between items-start border border-slate-700"
+            className="p-4 bg-slate-800 rounded-xl shadow-lg border border-slate-700"
           >
-            <div>
-              <h2 className={`font-semibold ${todo.completed ? "line-through text-gray-500" : "text-gray-100"}`}>
-                {todo.title}
-              </h2>
-              <p className="text-sm text-gray-400">{todo.description}</p>
-            </div>
-            <input
-              type="checkbox"
-              checked={todo.completed}
-              onChange={() => toggleTodo(todo.id)}
-              className="ml-2 accent-indigo-500"
-            />
+            {editingId === todo.id ? (
+              <div className="space-y-2">
+                <input
+                  type="text"
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                  className="w-full p-2 border border-slate-600 bg-slate-900 text-gray-100 rounded-lg"
+                />
+                <textarea
+                  value={editDescription}
+                  onChange={(e) => setEditDescription(e.target.value)}
+                  className="w-full p-2 border border-slate-600 bg-slate-900 text-gray-100 rounded-lg"
+                />
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => saveEdit(todo.id)}
+                    className="flex-1 bg-indigo-600 text-white p-2 rounded-lg hover:bg-indigo-700"
+                  >
+                    Save
+                  </button>
+                  <button
+                    onClick={() => setEditingId(null)}
+                    className="flex-1 bg-slate-600 text-white p-2 rounded-lg hover:bg-slate-700"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex justify-between items-start">
+                <div>
+                  <h2 className={`font-semibold ${todo.completed ? "line-through text-gray-500" : "text-gray-100"}`}>
+                    {todo.title}
+                  </h2>
+                  <p className="text-sm text-gray-400">{todo.description}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={todo.completed}
+                    onChange={() => toggleTodo(todo.id, todo.completed)}
+                    className="accent-indigo-500"
+                  />
+                  <button
+                    onClick={() => startEdit(todo)}
+                    className="text-indigo-400 hover:text-indigo-300 text-sm"
+                  >
+                    ✎ Edit
+                  </button>
+                </div>
+              </div>
+            )}
           </li>
         ))}
       </ul>
