@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
 
+// ----------------- Types -----------------
 type Todo = {
   id: string;
   title: string;
@@ -11,7 +12,15 @@ type Todo = {
   created_at: string;
 };
 
+type ChatMessage = {
+  id: number;
+  sender: "user" | "bot";
+  text: string;
+};
+
+// ----------------- Main Component -----------------
 export default function Home() {
+  // To-do state
   const [todos, setTodos] = useState<Todo[]>([]);
   const [newTask, setNewTask] = useState("");
   const [newDescription, setNewDescription] = useState("");
@@ -19,6 +28,12 @@ export default function Home() {
   const [editingTitle, setEditingTitle] = useState("");
   const [editingDescription, setEditingDescription] = useState("");
 
+  // Chat state
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState("");
+
+  // ----------------- To-do Functions -----------------
   useEffect(() => {
     fetchTodos();
   }, []);
@@ -36,7 +51,6 @@ export default function Home() {
   const addTodo = async () => {
     if (!newTask) return;
 
-    // 1. Insert into Supabase
     const { data, error } = await supabase
       .from("todos")
       .insert([{ title: newTask, description: newDescription, completed: false }])
@@ -47,20 +61,19 @@ export default function Home() {
       return;
     }
 
-    // 2. Update local state
     setTodos([...todos, ...(data as Todo[])]);
     setNewTask("");
     setNewDescription("");
 
-    // 3. Send to n8n webhook for AI enhancement
+    // Send to n8n webhook
     try {
       await fetch("http://localhost:5678/webhook-test/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          id: data[0].id,
-          title: data[0].title,
-          description: data[0].description,
+          id: data![0].id,
+          title: data![0].title,
+          description: data![0].description,
         }),
       });
     } catch (err) {
@@ -109,8 +122,44 @@ export default function Home() {
 
   const tasksRemaining = todos.filter((todo) => !todo.completed).length;
 
+  // ----------------- Chat Functions -----------------
+  const sendChatMessage = async () => {
+    if (!chatInput.trim()) return;
+
+    const newMsg: ChatMessage = {
+      id: Date.now(),
+      sender: "user",
+      text: chatInput,
+    };
+
+    setChatMessages((prev) => [...prev, newMsg]);
+    const currentInput = chatInput;
+    setChatInput("");
+
+    try {
+      const res = await fetch("http://localhost:5678/webhook-test/d287ffa8-984d-486c-a2cd-a2a2de952b13", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: currentInput }),
+      });
+
+      const data = await res.json();
+
+      const botMsg: ChatMessage = {
+        id: Date.now() + 1,
+        sender: "bot",
+        text: data.reply || "🤖 Sorry, I didn’t understand that.",
+      };
+
+      setChatMessages((prev) => [...prev, botMsg]);
+    } catch (err) {
+      console.error("Chat error:", err);
+    }
+  };
+
+  // ----------------- Render -----------------
   return (
-    <main className="min-h-screen bg-gray-900 flex flex-col items-center p-8">
+    <main className="min-h-screen bg-gray-900 flex flex-col items-center p-8 relative">
       <h1 className="text-4xl font-extrabold mb-6 text-white">📝 My To-Do List</h1>
       <p className="mb-4 text-gray-400">
         {tasksRemaining} task{tasksRemaining !== 1 ? "s" : ""} remaining
@@ -210,6 +259,50 @@ export default function Home() {
           </li>
         ))}
       </ul>
+
+      {/* Chat bubble button */}
+      <button
+        onClick={() => setIsChatOpen(!isChatOpen)}
+        className="fixed bottom-6 right-6 bg-blue-500 hover:bg-blue-600 text-white p-4 rounded-full shadow-lg"
+      >
+        💬
+      </button>
+
+      {/* Chat window */}
+      {isChatOpen && (
+        <div className="fixed bottom-20 right-6 w-80 bg-gray-800 rounded-xl shadow-lg flex flex-col overflow-hidden">
+          <div className="bg-gray-700 px-4 py-2 text-white font-semibold">🤖 Chatbot</div>
+          <div className="flex-1 overflow-y-auto p-3 space-y-2">
+            {chatMessages.map((msg) => (
+              <div
+                key={msg.id}
+                className={`px-3 py-2 rounded-lg max-w-[80%] ${
+                  msg.sender === "user"
+                    ? "bg-blue-500 text-white ml-auto"
+                    : "bg-gray-600 text-white mr-auto"
+                }`}
+              >
+                {msg.text}
+              </div>
+            ))}
+          </div>
+          <div className="flex p-2 border-t border-gray-700">
+            <input
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && sendChatMessage()}
+              placeholder="Type a message..."
+              className="flex-1 bg-gray-700 text-white px-3 py-2 rounded-l-lg focus:outline-none"
+            />
+            <button
+              onClick={sendChatMessage}
+              className="bg-blue-500 hover:bg-blue-600 text-white px-4 rounded-r-lg"
+            >
+              Send
+            </button>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
