@@ -96,30 +96,30 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen bg-slate-100 p-8 flex flex-col items-center">
-      <h1 className="text-3xl font-bold mb-6">Todo App + Chatbot</h1>
+    <main className="min-h-screen bg-gradient-to-br from-gray-900 via-slate-900 to-black text-gray-100 p-8 flex flex-col items-center">
+      <h1 className="text-4xl font-bold mb-8 text-indigo-400 drop-shadow-lg">Todo App + Chatbot</h1>
 
       {/* Todo Form */}
       <form
         onSubmit={handleAddTodo}
-        className="space-y-4 bg-slate-50 p-6 rounded-2xl shadow-lg max-w-md border border-slate-200"
+        className="space-y-4 bg-slate-800/80 p-6 rounded-2xl shadow-xl max-w-md border border-slate-700"
       >
         <input
           type="text"
           placeholder="Enter title..."
           value={newTitle}
           onChange={(e) => setNewTitle(e.target.value)}
-          className="w-full p-2 border rounded-lg shadow-inner"
+          className="w-full p-2 border border-slate-600 bg-slate-900 text-gray-100 rounded-lg shadow-inner focus:ring focus:ring-indigo-500"
         />
         <textarea
           placeholder="Enter description..."
           value={newDescription}
           onChange={(e) => setNewDescription(e.target.value)}
-          className="w-full p-2 border rounded-lg shadow-inner"
+          className="w-full p-2 border border-slate-600 bg-slate-900 text-gray-100 rounded-lg shadow-inner focus:ring focus:ring-indigo-500"
         />
         <button
           type="submit"
-          className="w-full bg-gradient-to-r from-blue-500 to-indigo-600 text-white p-2 rounded-lg shadow hover:scale-105 transition"
+          className="w-full bg-gradient-to-r from-indigo-600 to-purple-700 text-white p-2 rounded-lg shadow-lg hover:scale-105 transition"
         >
           Add Todo
         </button>
@@ -130,19 +130,19 @@ export default function Home() {
         {todos.map((todo) => (
           <li
             key={todo.id}
-            className="p-4 bg-white rounded-xl shadow flex justify-between items-start"
+            className="p-4 bg-slate-800 rounded-xl shadow-lg flex justify-between items-start border border-slate-700"
           >
             <div>
-              <h2 className={`font-semibold ${todo.completed ? "line-through text-gray-500" : ""}`}>
+              <h2 className={`font-semibold ${todo.completed ? "line-through text-gray-500" : "text-gray-100"}`}>
                 {todo.title}
               </h2>
-              <p className="text-sm text-gray-600">{todo.description}</p>
+              <p className="text-sm text-gray-400">{todo.description}</p>
             </div>
             <input
               type="checkbox"
               checked={todo.completed}
               onChange={() => toggleTodo(todo.id)}
-              className="ml-2"
+              className="ml-2 accent-indigo-500"
             />
           </li>
         ))}
@@ -152,7 +152,7 @@ export default function Home() {
       {!chatOpen && (
         <button
           onClick={() => setChatOpen(true)}
-          className="fixed bottom-6 right-6 bg-gradient-to-r from-blue-500 to-indigo-600 text-white p-4 rounded-full shadow-lg hover:scale-105 transition transform"
+          className="fixed bottom-6 right-6 bg-gradient-to-r from-indigo-600 to-purple-700 text-white p-4 rounded-full shadow-lg hover:scale-110 transition transform"
         >
           💬
         </button>
@@ -160,11 +160,11 @@ export default function Home() {
 
       {/* Chat Window */}
       {chatOpen && (
-        <div className="fixed bottom-20 right-6 w-80 h-96 bg-white/90 backdrop-blur-md rounded-2xl shadow-2xl flex flex-col border border-slate-200">
+        <div className="fixed bottom-20 right-6 w-80 h-96 bg-slate-900/95 backdrop-blur-md rounded-2xl shadow-2xl flex flex-col border border-slate-700">
           {/* Header */}
-          <div className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white p-3 flex justify-between items-center rounded-t-2xl shadow">
+          <div className="bg-gradient-to-r from-indigo-600 to-purple-700 text-white p-3 flex justify-between items-center rounded-t-2xl shadow">
             <span className="font-semibold">Chatbot</span>
-            <button onClick={() => setChatOpen(false)} className="hover:text-gray-200">
+            <button onClick={() => setChatOpen(false)} className="hover:text-gray-300">
               ✖
             </button>
           </div>
@@ -176,8 +176,8 @@ export default function Home() {
                 key={i}
                 className={`px-3 py-2 rounded-xl max-w-[75%] animate-fadeIn ${
                   msg.sender === "user"
-                    ? "bg-gradient-to-r from-blue-500 to-indigo-500 text-white self-end ml-auto shadow"
-                    : "bg-gray-200 text-gray-800 shadow-sm"
+                    ? "bg-gradient-to-r from-indigo-500 to-purple-600 text-white self-end ml-auto shadow-md"
+                    : "bg-slate-700 text-gray-100 shadow-sm"
                 }`}
               >
                 {msg.text}
@@ -186,17 +186,17 @@ export default function Home() {
           </div>
 
           {/* Input */}
-          <div className="p-3 border-t flex gap-2">
+          <div className="p-3 border-t border-slate-700 flex gap-2">
             <input
               type="text"
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
               placeholder="Type a message..."
-              className="flex-1 p-2 border rounded-lg shadow-inner"
+              className="flex-1 p-2 border border-slate-600 bg-slate-800 text-gray-100 rounded-lg shadow-inner focus:ring focus:ring-indigo-500"
             />
             <button
               onClick={handleSendMessage}
-              className="bg-blue-500 text-white px-4 rounded-lg shadow hover:bg-blue-600 transition"
+              className="bg-indigo-600 text-white px-4 rounded-lg shadow hover:bg-indigo-700 transition"
             >
               Send
             </button>
