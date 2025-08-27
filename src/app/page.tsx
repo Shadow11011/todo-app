@@ -8,6 +8,7 @@ type Todo = {
   title: string;
   description: string;
   completed: boolean;
+  user_id?: string;
   created_at?: string;
 };
 
@@ -17,6 +18,12 @@ type ChatMessage = {
 };
 
 export default function Home() {
+  // --- Auth State ---
+  const [user, setUser] = useState<any>(null);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [authMode, setAuthMode] = useState<"login" | "signup">("login");
+
   // --- Todo State ---
   const [todos, setTodos] = useState<Todo[]>([]);
   const [newTitle, setNewTitle] = useState("");
@@ -25,18 +32,66 @@ export default function Home() {
   const [editTitle, setEditTitle] = useState("");
   const [editDescription, setEditDescription] = useState("");
 
-  // --- Delete Confirmation State ---
-  const [deleteId, setDeleteId] = useState<string | null>(null);
-
   // --- Chatbot State ---
   const [chatOpen, setChatOpen] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
-  // Webhook URL for todo operations
-  const TODO_WEBHOOK_URL = "http://localhost:5678/webhook/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277";
+  const TODO_WEBHOOK_URL =
+    "http://localhost:5678/webhook/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277";
 
-  // Function to call the todo webhook
+  // --- Auth functions ---
+  const signUp = async () => {
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+    });
+    if (error) alert(error.message);
+    else alert("Check your email for verification link!");
+  };
+
+  const signIn = async () => {
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+    if (error) alert(error.message);
+    else setUser(data.user);
+  };
+
+  const signOut = async () => {
+    await supabase.auth.signOut();
+    setUser(null);
+    setTodos([]);
+  };
+
+  // --- Check session on mount ---
+  useEffect(() => {
+    const getSession = async () => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (user) setUser(user);
+    };
+    getSession();
+  }, []);
+
+  // --- Fetch Todos (only if logged in) ---
+  useEffect(() => {
+    if (!user) return;
+    const fetchTodos = async () => {
+      const { data, error } = await supabase
+        .from("todos")
+        .select("*")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false });
+      if (error) console.error("Error fetching todos:", error.message);
+      else setTodos(data || []);
+    };
+    fetchTodos();
+  }, [user]);
+
+  // --- Webhook helper ---
   const callTodoWebhook = async (action: string, todo: Todo) => {
     try {
       await fetch(TODO_WEBHOOK_URL, {
@@ -45,7 +100,7 @@ export default function Home() {
         body: JSON.stringify({
           action,
           todo,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         }),
       });
     } catch (err) {
@@ -53,24 +108,21 @@ export default function Home() {
     }
   };
 
-  // --- Fetch Todos from Supabase ---
-  useEffect(() => {
-    const fetchTodos = async () => {
-      const { data, error } = await supabase.from("todos").select("*").order("created_at", { ascending: false });
-      if (error) console.error("Error fetching todos:", error.message);
-      else setTodos(data || []);
-    };
-    fetchTodos();
-  }, []);
-
   // --- Add Todo ---
   const handleAddTodo = async (e: FormEvent) => {
     e.preventDefault();
-    if (!newTitle.trim()) return;
+    if (!newTitle.trim() || !user) return;
 
     const { data, error } = await supabase
       .from("todos")
-      .insert([{ title: newTitle, description: newDescription, completed: false }])
+      .insert([
+        {
+          title: newTitle,
+          description: newDescription,
+          completed: false,
+          user_id: user.id,
+        },
+      ])
       .select();
 
     if (error) {
@@ -82,66 +134,56 @@ export default function Home() {
     setTodos((prev) => [newTodo, ...prev]);
     setNewTitle("");
     setNewDescription("");
-
     callTodoWebhook("CREATE", newTodo);
   };
 
   // --- Toggle Todo ---
   const toggleTodo = async (id: string, completed: boolean) => {
-    const { error } = await supabase.from("todos").update({ completed: !completed }).eq("id", id);
+    const { error } = await supabase
+      .from("todos")
+      .update({ completed: !completed })
+      .eq("id", id);
     if (error) {
       console.error("Toggle error:", error.message);
       return;
     }
-
-    const updatedTodo = { ...todos.find(t => t.id === id), completed: !completed } as Todo;
+    const updatedTodo = {
+      ...todos.find((t) => t.id === id),
+      completed: !completed,
+    } as Todo;
     setTodos((prev) => prev.map((t) => (t.id === id ? updatedTodo : t)));
-
     callTodoWebhook("TOGGLE", updatedTodo);
-  };
-
-  // --- Start Edit ---
-  const startEdit = (todo: Todo) => {
-    setEditingId(todo.id);
-    setEditTitle(todo.title);
-    setEditDescription(todo.description);
   };
 
   // --- Save Edit ---
   const saveEdit = async (id: string) => {
-    const { error } = await supabase.from("todos").update({ title: editTitle, description: editDescription }).eq("id", id);
+    const { error } = await supabase
+      .from("todos")
+      .update({ title: editTitle, description: editDescription })
+      .eq("id", id);
     if (error) {
       console.error("Update error:", error.message);
       return;
     }
-
-    const updatedTodo = { ...todos.find(t => t.id === id), title: editTitle, description: editDescription } as Todo;
-    setTodos((prev) =>
-      prev.map((t) => (t.id === id ? updatedTodo : t))
-    );
+    const updatedTodo = {
+      ...todos.find((t) => t.id === id),
+      title: editTitle,
+      description: editDescription,
+    } as Todo;
+    setTodos((prev) => prev.map((t) => (t.id === id ? updatedTodo : t)));
     setEditingId(null);
-
     callTodoWebhook("UPDATE", updatedTodo);
   };
 
-  // --- Delete Todo (confirmed) ---
-  const confirmDelete = async () => {
-    if (!deleteId) return;
-
-    const { error } = await supabase.from("todos").delete().eq("id", deleteId);
+  // --- Delete Todo ---
+  const deleteTodo = async (id: string) => {
+    const { error } = await supabase.from("todos").delete().eq("id", id);
     if (error) {
       console.error("Delete error:", error.message);
       return;
     }
-
-    const deletedTodo = todos.find((t) => t.id === deleteId);
-    setTodos((prev) => prev.filter((t) => t.id !== deleteId));
-
-    if (deletedTodo) {
-      callTodoWebhook("DELETE", deletedTodo);
-    }
-
-    setDeleteId(null); // close modal
+    setTodos((prev) => prev.filter((t) => t.id !== id));
+    callTodoWebhook("DELETE", { id } as Todo);
   };
 
   // --- Chatbot Send ---
@@ -155,22 +197,96 @@ export default function Home() {
     setChatInput("");
 
     try {
-      const res = await fetch("http://localhost:5678/webhook/d287ffa8-984d-486c-a2cd-a2a2de952b13", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: currentInput }),
-      });
+      const res = await fetch(
+        "http://localhost:5678/webhook/d287ffa8-984d-486c-a2cd-a2a2de952b13",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: currentInput }),
+        }
+      );
       const data = await res.json();
-      setChatMessages((prev) => [...prev, { sender: "bot", text: data.reply || "Sorry, I don't understand." }]);
+      setChatMessages((prev) => [
+        ...prev,
+        { sender: "bot", text: data.reply || "Sorry, I don't understand." },
+      ]);
     } catch (err) {
       console.error("Chat error:", err);
-      setChatMessages((prev) => [...prev, { sender: "bot", text: "Error connecting to bot." }]);
+      setChatMessages((prev) => [
+        ...prev,
+        { sender: "bot", text: "Error connecting to bot." },
+      ]);
     }
   };
 
+  // --- If not logged in: show Auth UI ---
+  if (!user) {
+    return (
+      <main className="min-h-screen flex items-center justify-center bg-gray-900 text-gray-100">
+        <div className="bg-slate-800 p-8 rounded-xl shadow-xl w-96 space-y-4">
+          <h1 className="text-2xl font-bold text-indigo-400">
+            {authMode === "login" ? "Login" : "Sign Up"}
+          </h1>
+          <input
+            type="email"
+            placeholder="Email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="w-full p-2 border border-slate-600 bg-slate-900 rounded-lg"
+          />
+          <input
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="w-full p-2 border border-slate-600 bg-slate-900 rounded-lg"
+          />
+          <button
+            onClick={authMode === "login" ? signIn : signUp}
+            className="w-full bg-indigo-600 text-white py-2 rounded-lg hover:bg-indigo-700"
+          >
+            {authMode === "login" ? "Login" : "Sign Up"}
+          </button>
+          <p className="text-sm text-gray-400 text-center">
+            {authMode === "login" ? (
+              <>
+                Don’t have an account?{" "}
+                <button
+                  onClick={() => setAuthMode("signup")}
+                  className="text-indigo-400 hover:underline"
+                >
+                  Sign up
+                </button>
+              </>
+            ) : (
+              <>
+                Already have an account?{" "}
+                <button
+                  onClick={() => setAuthMode("login")}
+                  className="text-indigo-400 hover:underline"
+                >
+                  Login
+                </button>
+              </>
+            )}
+          </p>
+        </div>
+      </main>
+    );
+  }
+
+  // --- If logged in: show Todos + Chat ---
   return (
     <main className="min-h-screen bg-gradient-to-br from-gray-900 via-slate-900 to-black text-gray-100 p-8 flex flex-col items-center">
-      <h1 className="text-4xl font-bold mb-8 text-indigo-400 drop-shadow-lg">Todo App + Chatbot</h1>
+      <div className="flex justify-between w-full max-w-md mb-6">
+        <h1 className="text-3xl font-bold text-indigo-400">Todo App + Chatbot</h1>
+        <button
+          onClick={signOut}
+          className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700"
+        >
+          Logout
+        </button>
+      </div>
 
       {/* Todo Form */}
       <form
@@ -236,7 +352,13 @@ export default function Home() {
             ) : (
               <div className="flex justify-between items-start">
                 <div>
-                  <h2 className={`font-semibold ${todo.completed ? "line-through text-gray-500" : "text-gray-100"}`}>
+                  <h2
+                    className={`font-semibold ${
+                      todo.completed
+                        ? "line-through text-gray-500"
+                        : "text-gray-100"
+                    }`}
+                  >
                     {todo.title}
                   </h2>
                   <p className="text-sm text-gray-400">{todo.description}</p>
@@ -249,13 +371,17 @@ export default function Home() {
                     className="accent-indigo-500"
                   />
                   <button
-                    onClick={() => startEdit(todo)}
+                    onClick={() => {
+                      setEditingId(todo.id);
+                      setEditTitle(todo.title);
+                      setEditDescription(todo.description);
+                    }}
                     className="text-indigo-400 hover:text-indigo-300 text-sm"
                   >
                     ✎ Edit
                   </button>
                   <button
-                    onClick={() => setDeleteId(todo.id)}
+                    onClick={() => deleteTodo(todo.id)}
                     className="text-red-400 hover:text-red-300 text-sm"
                   >
                     🗑 Delete
@@ -267,31 +393,7 @@ export default function Home() {
         ))}
       </ul>
 
-      {/* Delete Confirmation Modal */}
-      {deleteId && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-slate-800 rounded-2xl p-6 shadow-2xl border border-slate-700 w-80">
-            <h2 className="text-lg font-semibold text-red-400 mb-4">Confirm Delete</h2>
-            <p className="text-gray-300 mb-6">Are you sure you want to delete this todo?</p>
-            <div className="flex gap-3">
-              <button
-                onClick={confirmDelete}
-                className="flex-1 bg-red-600 text-white p-2 rounded-lg hover:bg-red-700 transition"
-              >
-                Delete
-              </button>
-              <button
-                onClick={() => setDeleteId(null)}
-                className="flex-1 bg-slate-600 text-white p-2 rounded-lg hover:bg-slate-700 transition"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Floating Chat Button */}
+      {/* Chat Button & Window */}
       {!chatOpen && (
         <button
           onClick={() => setChatOpen(true)}
@@ -300,19 +402,17 @@ export default function Home() {
           💬
         </button>
       )}
-
-      {/* Chat Window */}
       {chatOpen && (
         <div className="fixed bottom-20 right-6 w-80 h-96 bg-slate-900/95 backdrop-blur-md rounded-2xl shadow-2xl flex flex-col border border-slate-700">
-          {/* Header */}
           <div className="bg-gradient-to-r from-indigo-600 to-purple-700 text-white p-3 flex justify-between items-center rounded-t-2xl shadow">
             <span className="font-semibold">Chatbot</span>
-            <button onClick={() => setChatOpen(false)} className="hover:text-gray-300">
+            <button
+              onClick={() => setChatOpen(false)}
+              className="hover:text-gray-300"
+            >
               ✖
             </button>
           </div>
-
-          {/* Messages */}
           <div className="flex-1 p-3 overflow-y-auto space-y-2">
             {chatMessages.map((msg, i) => (
               <div
@@ -327,8 +427,6 @@ export default function Home() {
               </div>
             ))}
           </div>
-
-          {/* Input */}
           <div className="p-3 border-t border-slate-700 flex gap-2">
             <input
               type="text"
