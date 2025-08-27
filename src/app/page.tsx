@@ -123,33 +123,40 @@ export default function Home() {
   const tasksRemaining = todos.filter((todo) => !todo.completed).length;
 
   // ----------------- Chat Functions -----------------
-  const sendChatMessage = async () => {
-    if (!chatInput.trim()) return;
+ const sendMessage = async () => {
+  if (!chatInput.trim()) return;
 
-    const newMsg: ChatMessage = {
-      id: Date.now(),
-      sender: "user",
-      text: chatInput,
-    };
+  // Show user message immediately
+  const userMessage = { sender: "user", text: chatInput };
+  setMessages((prev) => [...prev, userMessage]);
 
-    setChatMessages((prev) => [...prev, newMsg]);
-    const currentInput = chatInput;
-    setChatInput("");
+  const currentInput = chatInput; // save for async
+  setChatInput("");
 
-    try {
-      const res = await fetch("http://localhost:5678/webhook-test/d287ffa8-984d-486c-a2cd-a2a2de952b13", {
+  try {
+    const res = await fetch(
+      "http://localhost:5678/webhook-test/d287ffa8-984d-486c-a2cd-a2a2de952b13",
+      {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: currentInput }),
-      });
+      }
+    );
 
-      const data = await res.json();
+    const data = await res.json();
 
-      const botMessage = { sender: "bot", text: data.reply || "Sorry, I don’t understand." };
+    // Append bot reply
+    const botMessage = {
+      sender: "bot",
+      text: data.reply || "Sorry, I don’t understand.",
+    };
     setMessages((prev) => [...prev, botMessage]);
   } catch (err) {
     console.error("Chatbot error:", err);
-    setMessages((prev) => [...prev, { sender: "bot", text: "⚠️ Connection error" }]);
+    setMessages((prev) => [
+      ...prev,
+      { sender: "bot", text: "⚠️ Connection error" },
+    ]);
   }
 };
 
