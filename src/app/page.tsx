@@ -31,7 +31,7 @@ export default function Home() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
   // Webhook URL for todo operations
-  const TODO_WEBHOOK_URL = "http://localhost:5678/webhook-test/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277";
+  const TODO_WEBHOOK_URL = "http://localhost:5678/webhook/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277";
 
   // Function to call the todo webhook
   const callTodoWebhook = async (action: string, todo: Todo) => {
