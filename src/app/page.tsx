@@ -30,6 +30,26 @@ export default function Home() {
   const [chatInput, setChatInput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
+  // Webhook URL for todo operations
+  const TODO_WEBHOOK_URL = "http://localhost:5678/webhook-test/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277";
+
+  // Function to call the todo webhook
+  const callTodoWebhook = async (action: string, todo: Todo) => {
+    try {
+      await fetch(TODO_WEBHOOK_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action,
+          todo,
+          timestamp: new Date().toISOString()
+        }),
+      });
+    } catch (err) {
+      console.error("Webhook error:", err);
+    }
+  };
+
   // --- Fetch Todos from Supabase ---
   useEffect(() => {
     const fetchTodos = async () => {
@@ -55,9 +75,13 @@ export default function Home() {
       return;
     }
 
-    setTodos((prev) => [...data, ...prev]);
+    const newTodo = data[0];
+    setTodos((prev) => [newTodo, ...prev]);
     setNewTitle("");
     setNewDescription("");
+
+    // Call webhook for todo creation
+    callTodoWebhook("CREATE", newTodo);
   };
 
   // --- Toggle Todo ---
@@ -67,7 +91,12 @@ export default function Home() {
       console.error("Toggle error:", error.message);
       return;
     }
-    setTodos((prev) => prev.map((t) => (t.id === id ? { ...t, completed: !t.completed } : t)));
+    
+    const updatedTodo = { ...todos.find(t => t.id === id), completed: !completed } as Todo;
+    setTodos((prev) => prev.map((t) => (t.id === id ? updatedTodo : t)));
+    
+    // Call webhook for todo toggle
+    callTodoWebhook("TOGGLE", updatedTodo);
   };
 
   // --- Start Edit ---
@@ -84,10 +113,15 @@ export default function Home() {
       console.error("Update error:", error.message);
       return;
     }
+    
+    const updatedTodo = { ...todos.find(t => t.id === id), title: editTitle, description: editDescription } as Todo;
     setTodos((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, title: editTitle, description: editDescription } : t))
+      prev.map((t) => (t.id === id ? updatedTodo : t))
     );
     setEditingId(null);
+    
+    // Call webhook for todo update
+    callTodoWebhook("UPDATE", updatedTodo);
   };
 
   // --- Chatbot Send ---
@@ -101,13 +135,13 @@ export default function Home() {
     setChatInput("");
 
     try {
-      const res = await fetch("http://localhost:5678/webhook-test/d287ffa8-984d-486c-a2cd-a2a2de952b13", {
+      const res = await fetch("http://localhost:5678/webhook/d287ffa8-984d-486c-a2cd-a2a2de952b13", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: currentInput }),
       });
       const data = await res.json();
-      setChatMessages((prev) => [...prev, { sender: "bot", text: data.reply || "Sorry, I don’t understand." }]);
+      setChatMessages((prev) => [...prev, { sender: "bot", text: data.reply || "Sorry, I don't understand." }]);
     } catch (err) {
       console.error("Chat error:", err);
       setChatMessages((prev) => [...prev, { sender: "bot", text: "Error connecting to bot." }]);
