@@ -47,7 +47,7 @@ export default function Home() {
 
     try {
       await fetch(
-        "http://localhost:5678/webhook-test/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277",
+        "http://localhost:5678/webhook/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277",
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
