@@ -135,7 +135,7 @@ export default function Home() {
     setChatInput("");
 
     try {
-      const res = await fetch("http://localhost:5678/webhook/d287ffa8-984d-486c-a2cd-a2a2de952b13", {
+      const res = await fetch("http://localhost:5678/webhook-test/d287ffa8-984d-486c-a2cd-a2a2de952b13", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: currentInput }),
