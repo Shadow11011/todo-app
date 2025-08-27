@@ -140,22 +140,18 @@ export default function Home() {
       const res = await fetch("http://localhost:5678/webhook-test/d287ffa8-984d-486c-a2cd-a2a2de952b13", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: currentInput }),
+        body: JSON.stringify({ message: input }),
       });
 
       const data = await res.json();
 
-      const botMsg: ChatMessage = {
-        id: Date.now() + 1,
-        sender: "bot",
-        text: data.reply || "🤖 Sorry, I didn’t understand that.",
-      };
-
-      setChatMessages((prev) => [...prev, botMsg]);
-    } catch (err) {
-      console.error("Chat error:", err);
-    }
-  };
+      const botMessage = { sender: "bot", text: data.reply || "Sorry, I don’t understand." };
+    setMessages((prev) => [...prev, botMessage]);
+  } catch (err) {
+    console.error("Chatbot error:", err);
+    setMessages((prev) => [...prev, { sender: "bot", text: "⚠️ Connection error" }]);
+  }
+};
 
   // ----------------- Render -----------------
   return (
