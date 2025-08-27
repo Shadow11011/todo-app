@@ -2,6 +2,7 @@
 
 import { useState, useEffect, FormEvent } from "react";
 import { supabase } from "../lib/supabase";
+import { User } from '@supabase/supabase-js'; // Import User type from Supabase
 
 type Todo = {
   id: string;
@@ -19,7 +20,7 @@ type ChatMessage = {
 
 export default function Home() {
   // --- Auth State ---
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<User | null>(null); // Fixed: Use proper type instead of any
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
@@ -42,7 +43,7 @@ export default function Home() {
 
   // --- Auth functions ---
   const signUp = async () => {
-    const { data, error } = await supabase.auth.signUp({
+    const { error } = await supabase.auth.signUp({ // Fixed: Remove unused data variable
       email,
       password,
     });
@@ -250,7 +251,7 @@ export default function Home() {
           <p className="text-sm text-gray-400 text-center">
             {authMode === "login" ? (
               <>
-                Don’t have an account?{" "}
+                Don't have an account?{" "}
                 <button
                   onClick={() => setAuthMode("signup")}
                   className="text-indigo-400 hover:underline"
