@@ -26,8 +26,9 @@ export default function Home() {
   const [isSendingMessage, setIsSendingMessage] = useState(false);
 
   // --- n8n webhook URLs ---
-  const TODO_WEBHOOK_URL = "http://localhost:5678/webhook/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277";
-  const CHATBOT_WEBHOOK_URL = "http://localhost:5678/webhook/d287ffa8-984d-486c-a2cd-a2a2de952b13";
+const TODO_WEBHOOK_URL = "https://romantic-pig-hardy.ngrok-free.app/webhook/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277";
+const CHATBOT_WEBHOOK_URL = "https://romantic-pig-hardy.ngrok-free.app/webhook/d287ffa8-984d-486c-a2cd-a2a2de952b13";
+
 
   // --- Auth ---
   const signUp = async () => {
