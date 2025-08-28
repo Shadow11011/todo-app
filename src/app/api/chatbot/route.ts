@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 1️⃣ Store user message using service role key (supabaseAdmin)
+    // Store user message
     const { error: userMsgError } = await supabaseAdmin
       .from("chat_messages")
       .insert([{ user_id, sender: "user", message, user_email }]);
@@ -30,9 +30,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 2️⃣ Call n8n webhook for bot response
+    // Call n8n webhook
     let botReply = "I'm not sure how to respond to that.";
-
     try {
       const n8nRes = await fetch(N8N_CHATBOT_WEBHOOK_URL, {
         method: "POST",
@@ -41,23 +40,32 @@ export async function POST(req: NextRequest) {
       });
 
       if (n8nRes.ok) {
-  const n8nData = await n8nRes.json();
+        const n8nData = await n8nRes.json();
 
-  // Support both array output (JSON node) and object output
-  if (Array.isArray(n8nData) && n8nData[0]?.json) {
-    botReply = n8nData[0].json.reply || n8nData[0].json.confirmation || botReply;
-  } else if (n8nData.reply) {
-    botReply = n8nData.reply;
-  }
-}
-    // 3️⃣ Store bot response
+        if (Array.isArray(n8nData) && n8nData[0]?.json) {
+          botReply =
+            n8nData[0].json.reply ||
+            n8nData[0].json.confirmation ||
+            botReply;
+        } else if (n8nData.reply) {
+          botReply = n8nData.reply;
+        }
+      } else {
+        console.error("n8n error:", await n8nRes.text());
+      }
+    } catch (err) {
+      console.error("n8n fetch error:", err);
+      botReply = "I'm having trouble connecting to my processing service.";
+    }
+
+    // Store bot response
     const { error: botMsgError } = await supabaseAdmin
       .from("chat_messages")
       .insert([{ user_id, sender: "bot", message: botReply, user_email }]);
 
     if (botMsgError) console.error("Error storing bot message:", botMsgError);
 
-    // 4️⃣ Return bot reply
+    // Return bot reply
     return NextResponse.json({ reply: botReply });
   } catch (error) {
     console.error("Chatbot API error:", error);
