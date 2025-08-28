@@ -23,6 +23,7 @@ export default function Home() {
   const [chatOpen, setChatOpen] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [isSendingMessage, setIsSendingMessage] = useState(false);
 
   // --- n8n webhook URLs ---
   const TODO_WEBHOOK_URL = "http://localhost:5678/webhook/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277";
@@ -85,18 +86,6 @@ export default function Home() {
     }
   };
 
-  const callChatbotWebhook = async (message: string) => {
-    try {
-      await fetch(CHATBOT_WEBHOOK_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message, user_id: user?.id, user_email: user?.email }),
-      });
-    } catch (err) {
-      console.error("Chatbot webhook error:", err);
-    }
-  };
-
   // --- Todo CRUD ---
   const handleAddTodo = async (e: FormEvent) => {
     e.preventDefault();
@@ -148,28 +137,54 @@ export default function Home() {
 
   // --- Chatbot ---
   const handleSendMessage = async () => {
-    if (!chatInput.trim() || !user) return;
+    if (!chatInput.trim() || !user || isSendingMessage) return;
 
     const userMessage = { sender: "user" as const, text: chatInput };
     setChatMessages((prev) => [...prev, userMessage]);
     const currentInput = chatInput;
     setChatInput("");
+    setIsSendingMessage(true);
 
-    // Send to n8n
-    callChatbotWebhook(currentInput);
-
-    // Send to local API (route.ts) to store in Supabase
     try {
+      // Send to local API (route.ts) to store in Supabase and get bot response
       const res = await fetch("/api/chatbot", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: currentInput, user_id: user.id }),
+        body: JSON.stringify({ 
+          message: currentInput, 
+          user_id: user.id,
+          user_email: user.email
+        }),
       });
+      
+      if (!res.ok) {
+        throw new Error(`HTTP error! status: ${res.status}`);
+      }
+      
       const data = await res.json();
       setChatMessages((prev) => [...prev, { sender: "bot", text: data.reply || "Sorry, I don't understand." }]);
+      
+      // Also send to n8n webhook for processing (fire and forget)
+      try {
+        await fetch(CHATBOT_WEBHOOK_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ 
+            message: currentInput, 
+            user_id: user.id, 
+            user_email: user.email,
+            bot_response: data.reply
+          }),
+        });
+      } catch (n8nErr) {
+        console.error("n8n webhook error:", n8nErr);
+        // Don't show this error to the user as it's a secondary process
+      }
     } catch (err) {
-      console.error(err);
-      setChatMessages((prev) => [...prev, { sender: "bot", text: "Error connecting to bot." }]);
+      console.error("Chat error:", err);
+      setChatMessages((prev) => [...prev, { sender: "bot", text: "Error connecting to the chatbot service." }]);
+    } finally {
+      setIsSendingMessage(false);
     }
   };
 
@@ -380,6 +395,11 @@ export default function Home() {
                 {msg.text}
               </div>
             ))}
+            {isSendingMessage && (
+              <div className="px-3 py-2 rounded-xl max-w-[75%] bg-slate-700 text-gray-100 shadow-sm">
+                Thinking...
+              </div>
+            )}
           </div>
           <div className="p-3 border-t border-slate-700 flex gap-2">
             <input
@@ -388,10 +408,18 @@ export default function Home() {
               onChange={(e) => setChatInput(e.target.value)}
               placeholder="Type a message..."
               className="flex-1 p-2 border border-slate-600 bg-slate-800 text-gray-100 rounded-lg shadow-inner focus:ring focus:ring-indigo-500"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSendMessage();
+                }
+              }}
+              disabled={isSendingMessage}
             />
             <button
               onClick={handleSendMessage}
-              className="bg-indigo-600 text-white px-4 rounded-lg shadow hover:bg-indigo-700 transition"
+              className="bg-indigo-600 text-white px-4 rounded-lg shadow hover:bg-indigo-700 transition disabled:opacity-50"
+              disabled={isSendingMessage || !chatInput.trim()}
             >
               Send
             </button>
