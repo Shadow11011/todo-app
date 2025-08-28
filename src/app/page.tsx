@@ -33,11 +33,15 @@ export default function Home() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [isSendingMessage, setIsSendingMessage] = useState(false);
 
-  // --- n8n webhook URLs ---
   const TODO_WEBHOOK_URL =
-    "https://romantic-pig-hardy.ngrok-free.app/webhook-test/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277";
+    process.env.NODE_ENV === "development"
+      ? "http://localhost:5678/webhook/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277"
+      : "https://romantic-pig-hardy.ngrok-free.app/webhook-test/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277";
+
   const CHATBOT_WEBHOOK_URL =
-    "https://romantic-pig-hardy.ngrok-free.app/webhook-test/d287ffa8-984d-486c-a2cd-a2a2de952b13";
+    process.env.NODE_ENV === "development"
+      ? "http://localhost:5678/webhook/d287ffa8-984d-486c-a2cd-a2a2de952b13"
+      : "https://romantic-pig-hardy.ngrok-free.app/webhook-test/d287ffa8-984d-486c-a2cd-a2a2de952b13";
 
   // --- Auth ---
   const signUp = async () => {
@@ -63,8 +67,8 @@ export default function Home() {
 
   useEffect(() => {
     const getSession = async () => {
-      const { data: sessionData } = await supabase.auth.getUser();
-      if (sessionData.user) setUser(sessionData.user);
+      const { data } = await supabase.auth.getUser();
+      if (data.user) setUser(data.user);
     };
     getSession();
   }, []);
@@ -83,7 +87,6 @@ export default function Home() {
     fetchTodos();
   }, [user]);
 
-  // --- Call n8n Webhook ---
   const callTodoWebhook = async (action: string, todo: Todo) => {
     try {
       await fetch(TODO_WEBHOOK_URL, {
@@ -107,7 +110,6 @@ export default function Home() {
       .select();
 
     if (error) return console.error(error.message);
-
     const newTodo = data[0];
     setTodos((prev) => [newTodo, ...prev]);
     setNewTitle("");
@@ -119,32 +121,21 @@ export default function Home() {
   const toggleTodo = async (id: string, completed: boolean) => {
     const { data, error } = await supabase.from("todos").update({ completed: !completed }).eq("id", id).select();
     if (error) return console.error(error.message);
-
-    const updatedTodo = data[0];
-    setTodos((prev) => prev.map((t) => (t.id === id ? updatedTodo : t)));
-
-    callTodoWebhook("TOGGLE", updatedTodo);
+    setTodos((prev) => prev.map((t) => (t.id === id ? data[0] : t)));
+    callTodoWebhook("TOGGLE", data[0]);
   };
 
   const saveEdit = async (id: string) => {
-    const { data, error } = await supabase
-      .from("todos")
-      .update({ title: editTitle, description: editDescription })
-      .eq("id", id)
-      .select();
+    const { data, error } = await supabase.from("todos").update({ title: editTitle, description: editDescription }).eq("id", id).select();
     if (error) return console.error(error.message);
-
-    const updatedTodo = data[0];
-    setTodos((prev) => prev.map((t) => (t.id === id ? updatedTodo : t)));
+    setTodos((prev) => prev.map((t) => (t.id === id ? data[0] : t)));
     setEditingId(null);
-
-    callTodoWebhook("UPDATE", updatedTodo);
+    callTodoWebhook("UPDATE", data[0]);
   };
 
   const deleteTodo = async (id: string) => {
     await supabase.from("todos").delete().eq("id", id);
     setTodos((prev) => prev.filter((t) => t.id !== id));
-
     callTodoWebhook("DELETE", { id } as Todo);
   };
 
@@ -160,105 +151,24 @@ export default function Home() {
     setIsSendingMessage(true);
 
     try {
-      // Send to local API
       const res = await fetch("/api/chatbot", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: currentInput,
-          user_id: user.id,
-          user_email: user.email,
-        }),
+        body: JSON.stringify({ message: currentInput, user_id: user.id, user_email: user.email }),
       });
 
-      if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-
+      if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
-      const botMessage: ChatMessage = {
-        sender: "bot",
-        text: data.reply || "Sorry, I don't understand.",
-      };
+      const botMessage: ChatMessage = { sender: "bot", text: data.reply };
       setChatMessages((prev) => [...prev, botMessage]);
-
-      // Fire and forget to n8n
-      try {
-        await fetch(CHATBOT_WEBHOOK_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            message: currentInput,
-            user_id: user.id,
-            user_email: user.email,
-            bot_response: data.reply,
-          }),
-        });
-      } catch (n8nErr) {
-        console.error("n8n webhook error:", n8nErr);
-      }
     } catch (err) {
-      console.error("Chat error:", err);
-      const errorMsg: ChatMessage = { sender: "bot", text: "Error connecting to the chatbot service." };
-      setChatMessages((prev) => [...prev, errorMsg]);
+      console.error("Chatbot error:", err);
+      const botMessage: ChatMessage = { sender: "bot", text: "Chatbot service unavailable." };
+      setChatMessages((prev) => [...prev, botMessage]);
     } finally {
       setIsSendingMessage(false);
     }
   };
-
-  // --- Render Auth UI ---
-  if (!user) {
-    return (
-      <main className="min-h-screen flex items-center justify-center bg-gray-900 text-gray-100">
-        <div className="bg-slate-800 p-8 rounded-xl shadow-xl w-96 space-y-4">
-          <h1 className="text-2xl font-bold text-indigo-400">
-            {authMode === "login" ? "Login" : "Sign Up"}
-          </h1>
-          <input
-            type="email"
-            placeholder="Email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="w-full p-2 border border-slate-600 bg-slate-900 rounded-lg"
-          />
-          <input
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full p-2 border border-slate-600 bg-slate-900 rounded-lg"
-          />
-          <button
-            onClick={authMode === "login" ? signIn : signUp}
-            className="w-full bg-indigo-600 text-white py-2 rounded-lg hover:bg-indigo-700"
-          >
-            {authMode === "login" ? "Login" : "Sign Up"}
-          </button>
-          <p className="text-sm text-gray-400 text-center">
-            {authMode === "login" ? (
-              <>
-                Don&apos;t have an account?{" "}
-                <button
-                  onClick={() => setAuthMode("signup")}
-                  className="text-indigo-400 hover:underline"
-                >
-                  Sign up
-                </button>
-              </>
-            ) : (
-              <>
-                Already have an account?{" "}
-                <button
-                  onClick={() => setAuthMode("login")}
-                  className="text-indigo-400 hover:underline"
-                >
-                  Login
-                </button>
-              </>
-            )}
-          </p>
-        </div>
-      </main>
-    );
-  }
 
   // --- Render Todos + Chat ---
   return (
