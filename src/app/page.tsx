@@ -180,8 +180,8 @@ export default function Home() {
         .on(
           "postgres_changes",
           { event: "INSERT", schema: "public", table: "chat_messages", filter: `user_id=eq.${user.id}` },
-          (payload) => {
-            const newRow: ChatMessage = payload.new;
+          (payload: { new: ChatMessage }) => {
+            const newRow = payload.new;
             // Deduplicate: only append if we don't already have this id
             setChatMessages((prev) => {
               if (!newRow?.id) {
