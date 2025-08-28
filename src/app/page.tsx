@@ -114,7 +114,9 @@ export default function Home() {
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "chat_messages", filter: `user_id=eq.${user.id}` },
         (payload: RealtimePostgresChangesPayload<ChatMessage>) => {
-            if (!payload.new || !payload.new.sender || !payload.new.text || !payload.new.user_id) return;
+          const newRow = payload.new;
+          if (!newRow || !newRow.sender || !newRow.text || !newRow.user_id) return;
+
           setChatMessages((prev) => {
             if (prev.find((m) => m.id === newRow.id)) return prev;
             return [...prev, newRow];
@@ -200,10 +202,9 @@ export default function Home() {
       text: chatInput,
       user_id: user.id,
     };
-    setChatMessages((prev) => [...prev, userMessage]);
     setChatInput("");
 
-    // save to supabase
+    // save to supabase (subscription will update state)
     await supabase.from("chat_messages").insert([userMessage]);
 
     try {
@@ -214,14 +215,12 @@ export default function Home() {
       });
       const data = await res.json();
       const botMessage: ChatMessage = { sender: "bot", text: data.reply || "Sorry, I don't understand.", user_id: user.id };
-      setChatMessages((prev) => [...prev, botMessage]);
       await supabase.from("chat_messages").insert([botMessage]);
 
       if (data.newTodo) setTodos((prev) => [data.newTodo, ...prev]);
     } catch (err) {
       console.error(err);
       const botMessage: ChatMessage = { sender: "bot", text: "Error connecting to bot.", user_id: user.id };
-      setChatMessages((prev) => [...prev, botMessage]);
       await supabase.from("chat_messages").insert([botMessage]);
     }
   };
