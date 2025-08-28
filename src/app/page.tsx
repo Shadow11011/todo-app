@@ -4,6 +4,18 @@ import { useState, useEffect, FormEvent, useRef } from "react";
 import { supabase } from "../lib/supabase";
 import { User, RealtimeChannel } from "@supabase/supabase-js";
 
+/*
+  Ensure this table exists:
+
+  create table if not exists chat_messages (
+    id uuid primary key default gen_random_uuid(),
+    user_id uuid references auth.users not null,
+    sender text not null check (sender in ('user','bot')),
+    text text not null,
+    created_at timestamptz default now()
+  );
+*/
+
 type Todo = {
   id?: string;
   title: string;
@@ -551,7 +563,7 @@ export default function Home() {
                   ${placeholderFading ? "opacity-0 scale-95" : "opacity-100 scale-100"}`}
               >
                 <div className="w-56 h-20 rounded-xl bg-gradient-to-br from-indigo-700 via-purple-700 to-transparent opacity-80 flex items-center justify-center text-gray-100 text-sm">
-                  Start the conversation — say "help" or ask anything
+                  Start the conversation — say &quot;help&quot; or ask anything
                 </div>
               </div>
             )}
