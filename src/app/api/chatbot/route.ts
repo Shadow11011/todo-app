@@ -1,26 +1,26 @@
-// pages/api/chatbot.ts
-import type { NextApiRequest, NextApiResponse } from 'next';
-import { supabase } from '@/lib/supabase';
+// src/app/api/chatbot/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { supabase } from "@/lib/supabase";
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== 'POST') return res.status(405).end();
+export async function POST(req: NextRequest) {
+  const { message, user_id } = await req.json();
 
-  const { message, user_id } = req.body;
-
-  if (!user_id || !message) return res.status(400).json({ error: 'Missing user_id or message' });
+  if (!user_id || !message) {
+    return NextResponse.json({ error: "Missing user_id or message" }, { status: 400 });
+  }
 
   // Store user message
-  await supabase.from('chat_messages').insert([
-    { user_id, message, sender: 'user' }
+  await supabase.from("chat_messages").insert([
+    { user_id, message, sender: "user" }
   ]);
 
   // Generate bot response (example: echo message)
   const botReply = `You said: ${message}`;
 
   // Store bot message
-  await supabase.from('chat_messages').insert([
-    { user_id, message: botReply, sender: 'bot' }
+  await supabase.from("chat_messages").insert([
+    { user_id, message: botReply, sender: "bot" }
   ]);
 
-  res.status(200).json({ reply: botReply });
+  return NextResponse.json({ reply: botReply });
 }
