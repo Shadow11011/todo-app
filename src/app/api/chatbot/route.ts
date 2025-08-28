@@ -18,7 +18,7 @@ export async function POST(req: NextRequest) {
       console.error("Error storing user message:", userMsgError);
     }
 
-    let botReply = "I'm not sure how to respond to that.";
+    const botReply = "I'm not sure how to respond to that.";
 
     // TODO: call n8n webhook here to get reply
 
