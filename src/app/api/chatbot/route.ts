@@ -1,35 +1,37 @@
-// src/app/api/chatbot/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
-// Public ngrok URL for n8n webhook
 const N8N_CHATBOT_WEBHOOK_URL =
   "https://romantic-pig-hardy.ngrok-free.app/webhook-test/d287ffa8-984d-486c-a2cd-a2a2de952b13";
 
+type ChatbotRequest = {
+  message: string;
+  user_id: string;
+  user_email?: string | null;
+};
+
+type ChatMessage = { sender: "user" | "bot"; text: string };
+
 export async function POST(req: NextRequest) {
   try {
-    const { message, user_id, user_email } = await req.json();
+    const { message, user_id, user_email } = (await req.json()) as ChatbotRequest;
 
     if (!user_id || !message) {
-      return NextResponse.json(
-        { error: "Missing user_id or message" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Missing user_id or message" }, { status: 400 });
     }
 
-    // --- 1️⃣ Store user message in Supabase ---
+    // --- Store user message ---
+    const userMsg: ChatMessage = { sender: "user", text: message };
     const { error: userMsgError } = await supabaseAdmin
       .from("chat_messages")
-      .insert([{ user_id, sender: "user", message, user_email }]);
-
+      .insert([{ user_id, sender: userMsg.sender, message: userMsg.text, user_email }]);
     if (userMsgError) console.error("Error storing user message:", userMsgError);
 
-    // --- 2️⃣ Call n8n webhook ---
+    // --- Call n8n webhook ---
     let botReply = "I'm not sure how to respond to that.";
-
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 8000); // 8s timeout
+      const timeout = setTimeout(() => controller.abort(), 8000);
 
       const n8nRes = await fetch(N8N_CHATBOT_WEBHOOK_URL, {
         method: "POST",
@@ -37,40 +39,34 @@ export async function POST(req: NextRequest) {
         body: JSON.stringify({ message, user_id, user_email }),
         signal: controller.signal,
       });
-
       clearTimeout(timeout);
 
       if (n8nRes.ok) {
         const n8nData = await n8nRes.json();
-
-        // If n8n returns array from JSON node
         if (Array.isArray(n8nData) && n8nData[0]?.json) {
           botReply = n8nData[0].json.reply || n8nData[0].json.confirmation || botReply;
-        } else if (n8nData.reply) {
+        } else if (typeof n8nData.reply === "string") {
           botReply = n8nData.reply;
         }
       } else {
-        console.error("n8n webhook returned error:", await n8nRes.text());
+        console.error("n8n webhook error:", await n8nRes.text());
       }
     } catch (err) {
       console.error("n8n fetch error:", err);
       botReply = "Chatbot service is temporarily unavailable.";
     }
 
-    // --- 3️⃣ Store bot response ---
+    // --- Store bot message ---
+    const botMsg: ChatMessage = { sender: "bot", text: botReply };
     const { error: botMsgError } = await supabaseAdmin
       .from("chat_messages")
-      .insert([{ user_id, sender: "bot", message: botReply, user_email }]);
-
+      .insert([{ user_id, sender: botMsg.sender, message: botMsg.text, user_email }]);
     if (botMsgError) console.error("Error storing bot message:", botMsgError);
 
-    // --- 4️⃣ Return bot reply ---
     return NextResponse.json({ reply: botReply });
   } catch (error) {
     console.error("Chatbot API error:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
+
