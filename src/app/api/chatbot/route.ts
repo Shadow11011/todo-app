@@ -4,7 +4,7 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 // n8n webhook URL
 const N8N_CHATBOT_WEBHOOK_URL =
-  "http://localhost:5678/webhook-test/d287ffa8-984d-486c-a2cd-a2a2de952b13";
+  "http://localhost:5678/webhook/d287ffa8-984d-486c-a2cd-a2a2de952b13";
 
 export async function POST(req: NextRequest) {
   try {
