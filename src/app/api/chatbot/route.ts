@@ -2,7 +2,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
-// Replace with your stable n8n webhook URL
+// Public ngrok URL for n8n webhook
 const N8N_CHATBOT_WEBHOOK_URL =
   "https://romantic-pig-hardy.ngrok-free.app/webhook-test/d287ffa8-984d-486c-a2cd-a2a2de952b13";
 
@@ -17,23 +17,19 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Store user message
+    // --- 1️⃣ Store user message in Supabase ---
     const { error: userMsgError } = await supabaseAdmin
       .from("chat_messages")
       .insert([{ user_id, sender: "user", message, user_email }]);
 
-    if (userMsgError) {
-      console.error("Error storing user message:", userMsgError);
-      // We continue even if storing fails, so chatbot still responds
-    }
+    if (userMsgError) console.error("Error storing user message:", userMsgError);
 
-    // Default bot reply
+    // --- 2️⃣ Call n8n webhook ---
     let botReply = "I'm not sure how to respond to that.";
 
-    // Call n8n webhook safely with timeout
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 5000); // 5s timeout
+      const timeout = setTimeout(() => controller.abort(), 8000); // 8s timeout
 
       const n8nRes = await fetch(N8N_CHATBOT_WEBHOOK_URL, {
         method: "POST",
@@ -47,12 +43,9 @@ export async function POST(req: NextRequest) {
       if (n8nRes.ok) {
         const n8nData = await n8nRes.json();
 
-        // Check for array (n8n JSON node) or direct reply
+        // If n8n returns array from JSON node
         if (Array.isArray(n8nData) && n8nData[0]?.json) {
-          botReply =
-            n8nData[0].json.reply ||
-            n8nData[0].json.confirmation ||
-            botReply;
+          botReply = n8nData[0].json.reply || n8nData[0].json.confirmation || botReply;
         } else if (n8nData.reply) {
           botReply = n8nData.reply;
         }
@@ -64,14 +57,14 @@ export async function POST(req: NextRequest) {
       botReply = "Chatbot service is temporarily unavailable.";
     }
 
-    // Store bot response
+    // --- 3️⃣ Store bot response ---
     const { error: botMsgError } = await supabaseAdmin
       .from("chat_messages")
       .insert([{ user_id, sender: "bot", message: botReply, user_email }]);
 
     if (botMsgError) console.error("Error storing bot message:", botMsgError);
 
-    // Return bot reply
+    // --- 4️⃣ Return bot reply ---
     return NextResponse.json({ reply: botReply });
   } catch (error) {
     console.error("Chatbot API error:", error);
