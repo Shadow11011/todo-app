@@ -1,11 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { createClient } from "@supabase/supabase-js";
-import { RealtimePostgresChangesPayload } from "@supabase/supabase-js";
+import { createClient, RealtimePostgresChangesPayload } from "@supabase/supabase-js";
 import { v4 as uuidv4 } from "uuid";
 
-// ✅ Define types
 interface Todo {
   id: string;
   user_id: string;
@@ -34,22 +32,20 @@ export default function Home() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [newMessage, setNewMessage] = useState("");
 
-  // ✅ Auth
+  // Auth
   useEffect(() => {
-    const session = supabase.auth.getSession().then(({ data }) => {
+    supabase.auth.getSession().then(({ data }) => {
       if (data?.session) setUser(data.session.user);
     });
-
     const { data: authListener } = supabase.auth.onAuthStateChange(
       (_event, session) => setUser(session?.user ?? null)
     );
-
     return () => {
       authListener.subscription.unsubscribe();
     };
   }, []);
 
-  // ✅ Fetch + realtime todos
+  // Todos
   useEffect(() => {
     if (!user) return;
 
@@ -89,7 +85,7 @@ export default function Home() {
     };
   }, [user]);
 
-  // ✅ Fetch + realtime chat
+  // Chat
   useEffect(() => {
     if (!user) return;
 
@@ -109,7 +105,7 @@ export default function Home() {
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "chat_messages", filter: `user_id=eq.${user.id}` },
         (payload: RealtimePostgresChangesPayload<ChatMessage>) => {
-          const newRow = payload.new as ChatMessage; // ✅ fix here
+          const newRow = payload.new as ChatMessage; // ✅ Fix type issue
           if (!newRow || !newRow.sender || !newRow.text || !newRow.user_id) return;
 
           setChatMessages((prev) => {
@@ -125,31 +121,24 @@ export default function Home() {
     };
   }, [user]);
 
-  // ✅ Add todo
+  // Todo actions
   const addTodo = async () => {
     if (!newTask.trim() || !user) return;
     await supabase.from("todos").insert([
-      {
-        id: uuidv4(),
-        user_id: user.id,
-        task: newTask,
-        is_complete: false,
-      },
+      { id: uuidv4(), user_id: user.id, task: newTask, is_complete: false },
     ]);
     setNewTask("");
   };
 
-  // ✅ Toggle todo
   const toggleTodo = async (id: string, is_complete: boolean) => {
     await supabase.from("todos").update({ is_complete: !is_complete }).eq("id", id);
   };
 
-  // ✅ Delete todo
   const deleteTodo = async (id: string) => {
     await supabase.from("todos").delete().eq("id", id);
   };
 
-  // ✅ Send message (insert only, rely on realtime for UI)
+  // Chat actions
   const handleSendMessage = async () => {
     if (!newMessage.trim() || !user) return;
 
@@ -160,7 +149,6 @@ export default function Home() {
       text: newMessage,
       created_at: new Date().toISOString(),
     };
-
     await supabase.from("chat_messages").insert([message]);
     setNewMessage("");
 
@@ -184,9 +172,7 @@ export default function Home() {
         <button
           className="mt-4 p-2 bg-blue-500 text-white rounded"
           onClick={async () => {
-            const { data, error } = await supabase.auth.signInWithOAuth({
-              provider: "github",
-            });
+            const { error } = await supabase.auth.signInWithOAuth({ provider: "github" });
             if (error) console.error(error);
           }}
         >
@@ -198,7 +184,7 @@ export default function Home() {
 
   return (
     <div className="grid grid-cols-2 gap-6 p-8">
-      {/* ✅ Todo List */}
+      {/* Todo List */}
       <div>
         <h1 className="text-xl font-bold mb-4">Todo List</h1>
         <div className="flex gap-2 mb-4">
@@ -232,7 +218,7 @@ export default function Home() {
         </ul>
       </div>
 
-      {/* ✅ Chat */}
+      {/* Chat */}
       <div>
         <h1 className="text-xl font-bold mb-4">Chat</h1>
         <div className="border p-4 h-96 overflow-y-auto mb-4">
