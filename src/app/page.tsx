@@ -203,7 +203,9 @@ export default function Home() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: currentInput }),
+          body: JSON.stringify({ message: currentInput,  
+                                user_id: user?.id,
+                               user_email: user?.email}),
         }
       );
       const data = await res.json();
