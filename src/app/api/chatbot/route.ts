@@ -1,39 +1,69 @@
-import { supabase } from "@/lib/supabase";
-import { NextResponse } from "next/server";
+// src/app/api/chatbot/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
-export async function POST(req: Request) {
+// n8n webhook URL
+const N8N_CHATBOT_WEBHOOK_URL =
+  "http://localhost:5678/webhook-test/d287ffa8-984d-486c-a2cd-a2a2de952b13";
+
+export async function POST(req: NextRequest) {
   try {
-    const { message, user_id } = await req.json();
+    const { message, user_id, user_email } = await req.json();
 
-    if (!message || !user_id) {
-      return NextResponse.json({ reply: "Missing data" }, { status: 400 });
+    if (!user_id || !message) {
+      return NextResponse.json(
+        { error: "Missing user_id or message" },
+        { status: 400 }
+      );
     }
 
-    // Call n8n webhook and wait for final JSON
-    const n8nRes = await fetch(process.env.N8N_WEBHOOK_URL!, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, user_id }),
-    });
+    // 1️⃣ Store user message using service role key (supabaseAdmin)
+    const { error: userMsgError } = await supabaseAdmin
+      .from("chat_messages")
+      .insert([{ user_id, sender: "user", message, user_email }]);
 
-    if (!n8nRes.ok) {
-      throw new Error(`n8n returned status ${n8nRes.status}`);
+    if (userMsgError) {
+      console.error("Error storing user message:", userMsgError);
+      return NextResponse.json(
+        { error: "Failed to store user message" },
+        { status: 500 }
+      );
     }
 
-    const n8nData = await n8nRes.json();
-    const reply = n8nData?.reply ?? "Sorry, I couldn't process your request.";
+    // 2️⃣ Call n8n webhook for bot response
+    let botReply = "I'm not sure how to respond to that.";
 
-    // Save messages to Supabase
-    await supabase.from("chat_messages").insert([
-      { user_id, sender: "user", message },
-      { user_id, sender: "bot", message: reply },
-    ]);
+    try {
+      const n8nRes = await fetch(N8N_CHATBOT_WEBHOOK_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message, user_id, user_email }),
+      });
 
-    return NextResponse.json({ reply });
-  } catch (err) {
-    console.error("Chat API error:", err);
+      if (n8nRes.ok) {
+        const n8nData = await n8nRes.json();
+        botReply = n8nData.reply || "I'm not sure how to respond to that.";
+      } else {
+        console.error("n8n error:", await n8nRes.text());
+      }
+    } catch (err) {
+      console.error("n8n fetch error:", err);
+      botReply = "I'm having trouble connecting to my processing service.";
+    }
+
+    // 3️⃣ Store bot response
+    const { error: botMsgError } = await supabaseAdmin
+      .from("chat_messages")
+      .insert([{ user_id, sender: "bot", message: botReply, user_email }]);
+
+    if (botMsgError) console.error("Error storing bot message:", botMsgError);
+
+    // 4️⃣ Return bot reply
+    return NextResponse.json({ reply: botReply });
+  } catch (error) {
+    console.error("Chatbot API error:", error);
     return NextResponse.json(
-      { reply: "Error connecting to chatbot." },
+      { error: "Internal server error" },
       { status: 500 }
     );
   }
