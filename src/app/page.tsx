@@ -64,6 +64,9 @@ export default function Home() {
     await supabase.auth.signOut();
     setUser(null);
     setTodos([]);
+    setChatMessages([]);
+    setChatInput("");
+    setChatOpen(false);
   };
 
   // --- Check session on mount ---
