@@ -2,32 +2,19 @@
 
 import { useState, useEffect, FormEvent, useRef } from "react";
 import { supabase } from "../lib/supabase";
-import { User, RealtimeChannel } from "@supabase/supabase-js";
-
-/*
-  Ensure this table exists:
-
-  create table if not exists chat_messages (
-    id uuid primary key default gen_random_uuid(),
-    user_id uuid references auth.users not null,
-    sender text not null check (sender in ('user','bot')),
-    text text not null,
-    created_at timestamptz default now()
-  );
-*/
+import { User } from "@supabase/supabase-js";
 
 type Todo = {
-  id?: string;
+  id: string;
   title: string;
-  description?: string;
-  completed?: boolean;
+  description: string;
+  completed: boolean;
   user_id?: string;
   created_at?: string;
 };
 
 type ChatMessage = {
   id?: string;
-  user_id?: string;
   sender: "user" | "bot";
   text: string;
   created_at?: string;
@@ -49,48 +36,30 @@ export default function Home() {
   const [editDescription, setEditDescription] = useState("");
   const [todoToDelete, setTodoToDelete] = useState<Todo | null>(null);
 
-  // --- Chatbot State ---
+  // --- Chat State ---
   const [chatOpen, setChatOpen] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const chatContainerRef = useRef<HTMLDivElement>(null);
 
-  // Placeholder visibility/fade state
-  const [showPlaceholder, setShowPlaceholder] = useState<boolean>(true);
-  const [placeholderFading, setPlaceholderFading] = useState<boolean>(false);
-
-  // Track the last message id so we animate only the most-recent message once
+  // --- Fade-in animation support ---
   const [lastMessageId, setLastMessageId] = useState<string | null>(null);
 
-  // PRODUCTION webhook URLs (no test URL)
-  const TODO_WEBHOOK_URL = "https://romantic-pig-hardy.ngrok-free.app/webhook/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277";
-  const CHATBOT_WEBHOOK_URL = "https://romantic-pig-hardy.ngrok-free.app/webhook/d287ffa8-984d-486c-a2cd-a2a2de952b13";
+  // --- Supabase Realtime for chat ---
+  const [suppressHistory, setSuppressHistory] = useState(true);
 
-  // Auto-scroll chat to bottom when new messages are added
+  const CHATBOT_WEBHOOK_URL =
+    "https://romantic-pig-hardy.ngrok-free.app/webhook/d287ffa8-984d-486c-a2cd-a2a2de952b13";
+
+  const TODO_WEBHOOK_URL =
+    "https://romantic-pig-hardy.ngrok-free.app/webhook/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277";
+
+  // --- Auto-scroll chat ---
   useEffect(() => {
     if (chatContainerRef.current) {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
   }, [chatMessages]);
-
-  // Fade placeholder out when first message arrives, remove after animation.
-  useEffect(() => {
-    // if chat becomes non-empty -> fade out then remove
-    if (chatMessages.length > 0 && showPlaceholder) {
-      setPlaceholderFading(true); // start fade
-      const t = setTimeout(() => {
-        setShowPlaceholder(false); // remove from DOM after fade
-        setPlaceholderFading(false);
-      }, 300); // should match duration-300
-      return () => clearTimeout(t);
-    }
-
-    // if chat becomes empty -> show placeholder immediately
-    if (chatMessages.length === 0 && !showPlaceholder) {
-      setShowPlaceholder(true);
-      setPlaceholderFading(false);
-    }
-  }, [chatMessages.length, showPlaceholder]);
 
   // --- Auth functions ---
   const signUp = async () => {
@@ -101,28 +70,20 @@ export default function Home() {
 
   const signIn = async () => {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) {
-      alert(error.message);
-    } else {
-      setUser(data.user);
-    }
+    if (error) alert(error.message);
+    else setUser(data.user);
   };
 
   const signOut = async () => {
     await supabase.auth.signOut();
-    // Clear local UI state only; DB remains for next login or other devices.
     setUser(null);
     setTodos([]);
     setChatMessages([]);
     setChatInput("");
     setChatOpen(false);
-    // Reset placeholder state for next session
-    setShowPlaceholder(true);
-    setPlaceholderFading(false);
-    setLastMessageId(null);
+    setSuppressHistory(true);
   };
 
-  // --- Check session on mount ---
   useEffect(() => {
     const getSession = async () => {
       const { data } = await supabase.auth.getUser();
@@ -140,80 +101,49 @@ export default function Home() {
         .select("*")
         .eq("user_id", user.id)
         .order("created_at", { ascending: false });
-
       if (error) console.error("Error fetching todos:", error.message);
-      else setTodos((data as Todo[]) || []);
+      else setTodos(data || []);
     };
     fetchTodos();
   }, [user]);
 
-  // --- Realtime and Fetch Chat Messages on login ---
+  // --- Chat persistence ---
   useEffect(() => {
     if (!user) return;
 
-    let channel: RealtimeChannel | null = null;
-    let isMounted = true;
-
-    const fetchChats = async () => {
+    const fetchMessages = async () => {
       const { data, error } = await supabase
-        .from("chat_messages")
+        .from<ChatMessage>("chat_messages")
         .select("*")
         .eq("user_id", user.id)
         .order("created_at", { ascending: true });
-
-      if (error) {
-        console.error("Error fetching chat messages:", error.message);
-      } else if (isMounted) {
-        setChatMessages((data as ChatMessage[]) || []);
-        // optionally animate last message from fetch:
-        const last = (data as ChatMessage[])?.[data.length - 1];
-        if (last?.id) setLastMessageId(last.id);
-      }
+      if (!error) setChatMessages(data || []);
     };
+    fetchMessages();
 
-    fetchChats();
-
-    // Setup realtime subscription so that messages inserted by n8n/other clients appear instantly.
-    // We dedupe inserts by checking message id before pushing to state.
-    try {
-      channel = supabase.channel(`public:chat_messages:user=${user.id}`)
-        .on(
-          "postgres_changes",
-          { event: "INSERT", schema: "public", table: "chat_messages", filter: `user_id=eq.${user.id}` },
-          (payload: { new: ChatMessage }) => {
-            const newRow = payload.new;
-            // Deduplicate: only append if we don't already have this id
-            setChatMessages((prev) => {
-              if (!newRow?.id) {
-                // if no id for some reason, append (rare)
-                return [...prev, newRow];
-              }
-              const exists = prev.some((m) => m.id === newRow.id);
-              if (exists) return prev;
-              // set last message id so we animate it
-              setLastMessageId(newRow.id);
-              return [...prev, newRow];
-            });
-          }
-        )
-        .subscribe();
-    } catch {
-      console.error("Realtime subscription error:");
-    }
+    // Realtime subscription
+    const subscription = supabase
+      .channel("public:chat_messages")
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "chat_messages", filter: `user_id=eq.${user.id}` },
+        (payload: any) => {
+          const newRow: ChatMessage = payload.new;
+          setChatMessages((prev) => {
+            if (prev.find((m) => m.id === newRow.id)) return prev;
+            setLastMessageId(newRow.id || null);
+            return [...prev, newRow];
+          });
+        }
+      )
+      .subscribe();
 
     return () => {
-      isMounted = false;
-      if (channel) {
-        try {
-          supabase.removeChannel(channel);
-        } catch {
-          // ignore if removeChannel not available
-        }
-      }
+      supabase.removeChannel(subscription);
     };
   }, [user]);
 
-  // --- Webhook helper for todos (unchanged) ---
+  // --- Todo CRUD ---
   const callTodoWebhook = async (action: string, todo: Todo) => {
     try {
       await fetch(TODO_WEBHOOK_URL, {
@@ -230,7 +160,6 @@ export default function Home() {
     }
   };
 
-  // --- Todo CRUD (unchanged except using .select() to get inserted rows) ---
   const handleAddTodo = async (e: FormEvent) => {
     e.preventDefault();
     if (!newTitle.trim() || !user) return;
@@ -242,50 +171,42 @@ export default function Home() {
 
     if (error) return console.error(error.message);
 
-    const newTodo = data?.[0];
-    if (newTodo) setTodos((prev) => [newTodo, ...prev]);
+    const newTodo = data[0];
+    setTodos((prev) => [newTodo, ...prev]);
     setNewTitle("");
     setNewDescription("");
-    if (newTodo) callTodoWebhook("CREATE", newTodo);
+    callTodoWebhook("CREATE", newTodo);
   };
 
   const toggleTodo = async (id: string, completed: boolean) => {
-    const { data, error } = await supabase.from("todos").update({ completed: !completed }).eq("id", id).select();
+    const { error } = await supabase.from("todos").update({ completed: !completed }).eq("id", id);
     if (error) return console.error(error.message);
 
-    const updated = data?.[0];
-    setTodos((prev) => prev.map((t) => (t.id === id ? { ...(t as Todo), completed: !completed } : t)));
-    if (updated) callTodoWebhook("TOGGLE", updated as Todo);
+    setTodos((prev) =>
+      prev.map((t) => (t.id === id ? { ...t, completed: !completed } : t))
+    );
+    callTodoWebhook("TOGGLE", todos.find((t) => t.id === id)!);
   };
 
   const saveEdit = async (id: string) => {
-    const { data, error } = await supabase
+    const { error } = await supabase
       .from("todos")
       .update({ title: editTitle, description: editDescription })
-      .eq("id", id)
-      .select();
-
+      .eq("id", id);
     if (error) return console.error(error.message);
 
-    const updated = data?.[0];
     setTodos((prev) =>
       prev.map((t) => (t.id === id ? { ...t, title: editTitle, description: editDescription } : t))
     );
     setEditingId(null);
-    if (updated) callTodoWebhook("UPDATE", updated as Todo);
+    callTodoWebhook("UPDATE", todos.find((t) => t.id === id)!);
   };
 
-  const confirmDelete = (todo: Todo) => {
-    setTodoToDelete(todo);
-  };
-
-  const cancelDelete = () => {
-    setTodoToDelete(null);
-  };
+  const confirmDelete = (todo: Todo) => setTodoToDelete(todo);
+  const cancelDelete = () => setTodoToDelete(null);
 
   const executeDelete = async () => {
     if (!todoToDelete) return;
-
     const { error } = await supabase.from("todos").delete().eq("id", todoToDelete.id);
     if (error) return console.error(error.message);
 
@@ -294,114 +215,40 @@ export default function Home() {
     setTodoToDelete(null);
   };
 
-  // --- Chatbot send (Supabase persistence + webhook integration, using inserted rows) ---
+  // --- Chatbot send ---
   const handleSendMessage = async () => {
     if (!chatInput.trim() || !user) return;
 
-    const currentInput = chatInput;
+    const userMessage: ChatMessage = { sender: "user", text: chatInput };
+    setChatMessages((prev) => [...prev, userMessage]);
     setChatInput("");
+    setSuppressHistory(false);
 
     try {
-      // 1) Insert the user's message into Supabase and use the returned row for UI (prevents needing to rely on realtime to show it)
-      const { data: insertedUser, error: userInsertError } = await supabase
-        .from("chat_messages")
-        .insert([{ user_id: user.id, sender: "user", text: currentInput }])
-        .select()
-        .single();
-
-      if (userInsertError) {
-        console.error("Error inserting user message:", userInsertError.message);
-        // optimistic fallback
-        setChatMessages((prev) => [...prev, { sender: "user", text: currentInput }]);
-      } else {
-        // if realtime later sends same id, dedupe will stop duplication
-        setChatMessages((prev) => {
-          if (insertedUser?.id && prev.some((m) => m.id === insertedUser.id)) return prev;
-          // animate the user message we just inserted
-          if (insertedUser?.id) setLastMessageId(insertedUser.id);
-          return [...prev, insertedUser as ChatMessage];
-        });
-      }
-
-      // 2) Call chatbot webhook (external bot)
       const res = await fetch(CHATBOT_WEBHOOK_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: currentInput, user_id: user.id, user_email: user.email }),
+        body: JSON.stringify({ message: userMessage.text, user_id: user.id, user_email: user.email }),
       });
-
       const data = await res.json();
 
-      // 3) Save bot reply to Supabase (so DB is the source of truth / n8n can pick it up, too)
-      const botText: string = data.reply || "Sorry, I don't understand.";
-      const { data: insertedBot, error: botInsertError } = await supabase
-        .from("chat_messages")
-        .insert([{ user_id: user.id, sender: "bot", text: botText }])
-        .select()
-        .single();
+      const botMessage: ChatMessage = { sender: "bot", text: data.reply || "Sorry, I don't understand." };
+      setChatMessages((prev) => [...prev, botMessage]);
 
-      if (botInsertError) {
-        console.error("Error inserting bot message:", botInsertError.message);
-        setChatMessages((prev) => [...prev, { sender: "bot", text: botText }]);
-      } else {
-        setChatMessages((prev) => {
-          if (insertedBot?.id && prev.some((m) => m.id === insertedBot.id)) return prev;
-          // animate the bot message we just inserted
-          if (insertedBot?.id) setLastMessageId(insertedBot.id);
-          return [...prev, insertedBot as ChatMessage];
-        });
-      }
+      // Store both messages in Supabase
+      await supabase.from("chat_messages").insert([
+        { ...userMessage, user_id: user.id },
+        { ...botMessage, user_id: user.id },
+      ]);
 
-      // 4) If webhook returned a newTodo, enrich and save to todos table
-      if (data.newTodo) {
-        const todoPayload: Partial<Todo> = {
-          ...data.newTodo,
-          user_id: user.id,
-          completed: data.newTodo.completed ?? false,
-          created_at: data.newTodo.created_at ?? new Date().toISOString(),
-        };
-
-        const { data: todoInserted, error: todoError } = await supabase
-          .from("todos")
-          .insert([todoPayload])
-          .select();
-
-        if (todoError) {
-          console.error("Error inserting todo from bot:", todoError.message);
-        } else if (todoInserted?.[0]) {
-          setTodos((prev) => [todoInserted[0], ...prev]);
-          callTodoWebhook("CREATE_BY_BOT", todoInserted[0]);
-        }
-      }
+      if (data.newTodo) setTodos((prev) => [data.newTodo, ...prev]);
     } catch (err) {
-      console.error("Chat send error:", err);
-
-      const errorMsgText = "Error connecting to bot.";
-      try {
-        const { data: insertedErrMsg, error: errInsertError } = await supabase
-          .from("chat_messages")
-          .insert([{ user_id: user?.id, sender: "bot", text: errorMsgText }])
-          .select()
-          .single();
-
-        if (errInsertError) {
-          console.error("Error inserting error message:", errInsertError.message);
-          setChatMessages((prev) => [...prev, { sender: "bot", text: errorMsgText }]);
-        } else {
-          setChatMessages((prev) => {
-            if (insertedErrMsg?.id && prev.some((m) => m.id === insertedErrMsg.id)) return prev;
-            if (insertedErrMsg?.id) setLastMessageId(insertedErrMsg.id);
-            return [...prev, insertedErrMsg as ChatMessage];
-          });
-        }
-      } catch (e) {
-        console.error("Fatal error saving err msg:", e);
-        setChatMessages((prev) => [...prev, { sender: "bot", text: errorMsgText }]);
-      }
+      console.error(err);
+      setChatMessages((prev) => [...prev, { sender: "bot", text: "Error connecting to bot." }]);
     }
   };
 
-  // --- UI ---
+  // --- Auth UI ---
   if (!user) {
     return (
       <main className="min-h-screen flex items-center justify-center bg-gray-900 text-gray-100">
@@ -451,16 +298,9 @@ export default function Home() {
     );
   }
 
+  // --- Main App UI ---
   return (
     <main className="min-h-screen bg-gradient-to-br from-gray-900 via-slate-900 to-black text-gray-100 p-8 flex flex-col items-center">
-      {/* small style block for fadeInUp animation */}
-      <style>{`
-        @keyframes fadeInUp {
-          from { opacity: 0; transform: translateY(6px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-      `}</style>
-
       <div className="flex justify-between w-full max-w-md mb-6">
         <h1 className="text-3xl font-bold text-indigo-400">Todo App + Chatbot</h1>
         <button onClick={signOut} className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700">
@@ -497,7 +337,7 @@ export default function Home() {
                 <input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} className="w-full p-2 border border-slate-600 bg-slate-900 text-gray-100 rounded-lg" />
                 <textarea value={editDescription} onChange={(e) => setEditDescription(e.target.value)} className="w-full p-2 border border-slate-600 bg-slate-900 text-gray-100 rounded-lg" />
                 <div className="flex gap-2">
-                  <button onClick={() => saveEdit(todo.id as string)} className="flex-1 bg-indigo-600 text-white p-2 rounded-lg hover:bg-indigo-700">
+                  <button onClick={() => saveEdit(todo.id)} className="flex-1 bg-indigo-600 text-white p-2 rounded-lg hover:bg-indigo-700">
                     Save
                   </button>
                   <button onClick={() => setEditingId(null)} className="flex-1 bg-slate-600 text-white p-2 rounded-lg hover:bg-slate-700">
@@ -512,8 +352,8 @@ export default function Home() {
                   <p className="text-sm text-gray-400">{todo.description}</p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <input type="checkbox" checked={!!todo.completed} onChange={() => toggleTodo(todo.id as string, !!todo.completed)} className="accent-indigo-500" />
-                  <button onClick={() => { setEditingId(todo.id as string); setEditTitle(todo.title); setEditDescription(todo.description || ""); }} className="text-indigo-400 hover:text-indigo-300 text-sm">✎ Edit</button>
+                  <input type="checkbox" checked={todo.completed} onChange={() => toggleTodo(todo.id, todo.completed)} className="accent-indigo-500" />
+                  <button onClick={() => { setEditingId(todo.id); setEditTitle(todo.title); setEditDescription(todo.description); }} className="text-indigo-400 hover:text-indigo-300 text-sm">✎ Edit</button>
                   <button onClick={() => confirmDelete(todo)} className="text-red-400 hover:text-red-300 text-sm">🗑 Delete</button>
                 </div>
               </div>
@@ -544,46 +384,42 @@ export default function Home() {
 
       {/* Chat Button & Window */}
       {!chatOpen && (
-        <button onClick={() => setChatOpen(true)} className="fixed bottom-6 right-6 bg-gradient-to-r from-indigo-600 to-purple-700 text-white p-4 rounded-full shadow-lg hover:scale-110 transition transform">💬</button>
+        <button
+          onClick={() => {
+            setChatOpen(true);
+            setSuppressHistory(true); // empty chat on open
+          }}
+          className="fixed bottom-6 right-6 bg-gradient-to-r from-indigo-600 to-purple-700 text-white p-4 rounded-full shadow-lg hover:scale-110 transition transform"
+        >
+          💬
+        </button>
       )}
+
       {chatOpen && (
         <div className="fixed bottom-20 right-6 w-80 h-96 bg-slate-900/95 backdrop-blur-md rounded-2xl shadow-2xl flex flex-col border border-slate-700">
           <div className="bg-gradient-to-r from-indigo-600 to-purple-700 text-white p-3 flex justify-between items-center rounded-t-2xl shadow">
             <span className="font-semibold">Chatbot</span>
             <button onClick={() => setChatOpen(false)} className="hover:text-gray-300">✖</button>
           </div>
-
-          {/* Chat container (relative so placeholder overlay can be absolute) */}
-          <div className="relative flex-1 p-3 overflow-y-auto">
-            {/* Placeholder gradient when chat is empty — fades with soft animation */}
-            {showPlaceholder && (
-              <div
-                aria-hidden
-                className={`absolute inset-0 flex items-center justify-center pointer-events-none transition-opacity duration-300 ease-out transform
-                  ${placeholderFading ? "opacity-0 scale-95" : "opacity-100 scale-100"}`}
-              >
-                <div className="w-56 h-20 rounded-xl bg-gradient-to-br from-indigo-700 via-purple-700 to-transparent opacity-80 flex items-center justify-center text-gray-100 text-sm">
-                  Start the conversation — say &quot;help&quot; or ask anything
-                </div>
-              </div>
-            )}
-
-            <div ref={chatContainerRef} className="space-y-2">
-              {chatMessages.map((msg, i) => {
+          <div ref={chatContainerRef} className="flex-1 p-3 overflow-y-auto space-y-2">
+            {!suppressHistory &&
+              chatMessages.map((msg, i) => {
                 const animate = msg.id && msg.id === lastMessageId;
                 return (
                   <div
                     key={msg.id ?? i}
                     style={animate ? { animation: "fadeInUp 300ms ease-out" } : undefined}
-                    className={`px-3 py-2 rounded-xl max-w-[75%] ${msg.sender === "user" ? "bg-gradient-to-r from-indigo-500 to-purple-600 text-white self-end ml-auto shadow-md" : "bg-slate-700 text-gray-100 shadow-sm"}`}
+                    className={`px-3 py-2 rounded-xl max-w-[75%] ${
+                      msg.sender === "user"
+                        ? "bg-gradient-to-r from-indigo-500 to-purple-600 text-white self-end ml-auto shadow-md"
+                        : "bg-slate-700 text-gray-100 shadow-sm"
+                    }`}
                   >
                     {msg.text}
                   </div>
                 );
               })}
-            </div>
           </div>
-
           <div className="p-3 border-t border-slate-700 flex gap-2">
             <input
               type="text"
@@ -598,10 +434,20 @@ export default function Home() {
                 }
               }}
             />
-            <button onClick={handleSendMessage} className="bg-indigo-600 text-white px-4 rounded-lg shadow hover:bg-indigo-700 transition">Send</button>
+            <button onClick={handleSendMessage} className="bg-indigo-600 text-white px-4 rounded-lg shadow hover:bg-indigo-700 transition">
+              Send
+            </button>
           </div>
         </div>
       )}
+
+      <style jsx global>{`
+        @keyframes fadeInUp {
+          0% { opacity: 0; transform: translateY(8px); }
+          100% { opacity: 1; transform: translateY(0); }
+        }
+      `}</style>
     </main>
   );
 }
+
