@@ -2,7 +2,7 @@
 
 import { useState, useEffect, FormEvent, useRef } from "react";
 import { supabase } from "../lib/supabase";
-import { User } from "@supabase/supabase-js";
+import { User, RealtimeChannel } from "@supabase/supabase-js";
 
 type Todo = {
   id?: string;
@@ -139,7 +139,7 @@ export default function Home() {
   useEffect(() => {
     if (!user) return;
 
-    let channel: any = null;
+    let channel: RealtimeChannel | null = null;
     let isMounted = true;
 
     const fetchChats = async () => {
@@ -185,8 +185,8 @@ export default function Home() {
           }
         )
         .subscribe();
-    } catch (e) {
-      console.error("Realtime subscription error:", e);
+    } catch {
+      console.error("Realtime subscription error:");
     }
 
     return () => {
@@ -194,7 +194,7 @@ export default function Home() {
       if (channel) {
         try {
           supabase.removeChannel(channel);
-        } catch (e) {
+        } catch {
           // ignore if removeChannel not available
         }
       }
@@ -456,8 +456,6 @@ export default function Home() {
         </button>
       </div>
 
-      {/* (test toggle removed; production webhook used) */}
-
       {/* Todo Form */}
       <form onSubmit={handleAddTodo} className="space-y-4 bg-slate-800/80 p-6 rounded-2xl shadow-xl max-w-md border border-slate-700">
         <input
@@ -518,7 +516,7 @@ export default function Home() {
           <div className="bg-slate-800 p-6 rounded-xl shadow-xl max-w-md w-full mx-4 border border-slate-700">
             <h3 className="text-xl font-semibold text-gray-100 mb-4">Confirm Delete</h3>
             <p className="text-gray-300 mb-6">
-              Are you sure you want to delete &ldquo;{todoToDelete.title}&rdquo;? This action cannot be undone.
+              Are you sure you want to delete &quot;{todoToDelete.title}&quot;? This action cannot be undone.
             </p>
             <div className="flex gap-3 justify-end">
               <button onClick={cancelDelete} className="px-4 py-2 bg-slate-600 text-white rounded-lg hover:bg-slate-700 transition">
