@@ -1,39 +1,39 @@
-import { NextRequest, NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { supabase } from "@/lib/supabase";
+import { NextResponse } from "next/server";
 
-export async function POST(req: NextRequest) {
+export async function POST(req: Request) {
   try {
-    const { message, user_id, user_email } = await req.json();
+    const { message, user_id } = await req.json();
 
-    if (!user_id || !message) {
-      return NextResponse.json({ error: "Missing user_id or message" }, { status: 400 });
+    // 🔹 Call n8n webhook and wait for final JSON
+    const n8nRes = await fetch(process.env.N8N_WEBHOOK_URL!, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, user_id }),
+    });
+
+    if (!n8nRes.ok) {
+      throw new Error(`n8n returned ${n8nRes.status}`);
     }
 
-    // Insert user message
-    const { error: userMsgError } = await supabaseAdmin
-      .from("chat_messages")
-      .insert([{ user_id, message, sender: "user", user_email }]);
+    const n8nData = await n8nRes.json();
 
-    if (userMsgError) {
-      console.error("Error storing user message:", userMsgError);
-    }
+    // 🔹 Your JSON node returns { reply: "..." }
+    const reply = n8nData.reply ?? "No reply from workflow";
 
-    const botReply = "I'm not sure how to respond to that.";
+    // 🔹 Save both user + assistant messages into Supabase
+    await supabase.from("chat_messages").insert([
+      { user_id, role: "user", content: message },
+      { user_id, role: "assistant", content: reply },
+    ]);
 
-    // TODO: call n8n webhook here to get reply
-
-    // Insert bot reply
-    const { error: botMsgError } = await supabaseAdmin
-      .from("chat_messages")
-      .insert([{ user_id, message: botReply, sender: "bot", user_email }]);
-
-    if (botMsgError) {
-      console.error("Error storing bot message:", botMsgError);
-    }
-
-    return NextResponse.json({ reply: botReply });
-  } catch (error) {
-    console.error("Error in chatbot API:", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    // 🔹 Send reply back to the frontend chat UI
+    return NextResponse.json({ reply });
+  } catch (err) {
+    console.error("Chat API error:", err);
+    return NextResponse.json(
+      { reply: "Something went wrong." },
+      { status: 500 }
+    );
   }
 }
