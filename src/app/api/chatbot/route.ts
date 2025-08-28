@@ -2,10 +2,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
-// n8n webhook URL
+// Replace with your stable n8n webhook URL
 const N8N_CHATBOT_WEBHOOK_URL =
-  "https://romantic-pig-hardy.ngrok-free.app/webhook/d287ffa8-984d-486c-a2cd-a2a2de952b13";
-
+  "https://romantic-pig-hardy.ngrok-free.app/webhook-test/d287ffa8-984d-486c-a2cd-a2a2de952b13";
 
 export async function POST(req: NextRequest) {
   try {
@@ -25,24 +24,30 @@ export async function POST(req: NextRequest) {
 
     if (userMsgError) {
       console.error("Error storing user message:", userMsgError);
-      return NextResponse.json(
-        { error: "Failed to store user message" },
-        { status: 500 }
-      );
+      // We continue even if storing fails, so chatbot still responds
     }
 
-    // Call n8n webhook
+    // Default bot reply
     let botReply = "I'm not sure how to respond to that.";
+
+    // Call n8n webhook safely with timeout
     try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000); // 5s timeout
+
       const n8nRes = await fetch(N8N_CHATBOT_WEBHOOK_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message, user_id, user_email }),
+        signal: controller.signal,
       });
+
+      clearTimeout(timeout);
 
       if (n8nRes.ok) {
         const n8nData = await n8nRes.json();
 
+        // Check for array (n8n JSON node) or direct reply
         if (Array.isArray(n8nData) && n8nData[0]?.json) {
           botReply =
             n8nData[0].json.reply ||
@@ -52,11 +57,11 @@ export async function POST(req: NextRequest) {
           botReply = n8nData.reply;
         }
       } else {
-        console.error("n8n error:", await n8nRes.text());
+        console.error("n8n webhook returned error:", await n8nRes.text());
       }
     } catch (err) {
       console.error("n8n fetch error:", err);
-      botReply = "I'm having trouble connecting to my processing service.";
+      botReply = "Chatbot service is temporarily unavailable.";
     }
 
     // Store bot response
