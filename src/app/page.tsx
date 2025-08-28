@@ -2,7 +2,7 @@
 
 import { useState, useEffect, FormEvent } from "react";
 import { supabase } from "../lib/supabase";
-import { User } from "@supabase/supabase-js";
+import { User } from '@supabase/supabase-js';
 
 type Todo = {
   id: string;
@@ -38,6 +38,16 @@ export default function Home() {
   const [chatInput, setChatInput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
+  const TODO_WEBHOOK_URL_PROD =
+    "https://romantic-pig-hardy.ngrok-free.app/webhook/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277";
+  const TODO_WEBHOOK_URL_TEST =
+    "https://romantic-pig-hardy.ngrok-free.app/webhook-test/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277";
+
+  const CHAT_WEBHOOK_URL_PROD =
+    "https://romantic-pig-hardy.ngrok-free.app/webhook/d287ffa8-984d-486c-a2cd-a2a2de952b13";
+  const CHAT_WEBHOOK_URL_TEST =
+    "https://romantic-pig-hardy.ngrok-free.app/webhook-test/d287ffa8-984d-486c-a2cd-a2a2de952b13";
+
   // --- Auth functions ---
   const signUp = async () => {
     const { error } = await supabase.auth.signUp({ email, password });
@@ -63,8 +73,8 @@ export default function Home() {
   // --- Check session on mount ---
   useEffect(() => {
     const getSession = async () => {
-      const { data } = await supabase.auth.getUser();
-      if (data.user) setUser(data.user);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) setUser(user);
     };
     getSession();
   }, []);
@@ -78,13 +88,31 @@ export default function Home() {
         .select("*")
         .eq("user_id", user.id)
         .order("created_at", { ascending: false });
-      if (error) console.error(error.message);
+      if (error) console.error("Error fetching todos:", error.message);
       else setTodos(data || []);
     };
     fetchTodos();
   }, [user]);
 
-  // --- Todo CRUD ---
+  // --- Webhook helper ---
+  const callTodoWebhook = async (action: string, todo: Todo) => {
+    try {
+      await fetch(TODO_WEBHOOK_URL_PROD, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, todo, timestamp: new Date().toISOString() }),
+      });
+      await fetch(TODO_WEBHOOK_URL_TEST, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, todo, timestamp: new Date().toISOString() }),
+      });
+    } catch (err) {
+      console.error("Webhook error:", err);
+    }
+  };
+
+  // --- Add Todo ---
   const handleAddTodo = async (e: FormEvent) => {
     e.preventDefault();
     if (!newTitle.trim() || !user) return;
@@ -94,44 +122,72 @@ export default function Home() {
       .insert([{ title: newTitle, description: newDescription, completed: false, user_id: user.id }])
       .select();
 
-    if (error) return console.error(error.message);
+    if (error) {
+      console.error("Insert error:", error.message);
+      return;
+    }
 
-    setTodos((prev) => [data[0], ...prev]);
+    const newTodo = data[0];
+    setTodos((prev) => [newTodo, ...prev]);
     setNewTitle("");
     setNewDescription("");
+    callTodoWebhook("CREATE", newTodo);
   };
 
+  // --- Toggle Todo ---
   const toggleTodo = async (id: string, completed: boolean) => {
-    const { data, error } = await supabase.from("todos").update({ completed: !completed }).eq("id", id).select();
-    if (error) return console.error(error.message);
+    const { error } = await supabase.from("todos").update({ completed: !completed }).eq("id", id);
+    if (error) { console.error("Toggle error:", error.message); return; }
 
-    setTodos((prev) => prev.map((t) => (t.id === id ? data[0] : t)));
+    const updatedTodo = { ...todos.find((t) => t.id === id), completed: !completed } as Todo;
+    setTodos((prev) => prev.map((t) => (t.id === id ? updatedTodo : t)));
+    callTodoWebhook("TOGGLE", updatedTodo);
   };
 
+  // --- Save Edit ---
   const saveEdit = async (id: string) => {
-    const { data, error } = await supabase.from("todos").update({ title: editTitle, description: editDescription }).eq("id", id).select();
-    if (error) return console.error(error.message);
+    const { error } = await supabase.from("todos").update({ title: editTitle, description: editDescription }).eq("id", id);
+    if (error) { console.error("Update error:", error.message); return; }
 
-    setTodos((prev) => prev.map((t) => (t.id === id ? data[0] : t)));
+    const updatedTodo = { ...todos.find((t) => t.id === id), title: editTitle, description: editDescription } as Todo;
+    setTodos((prev) => prev.map((t) => (t.id === id ? updatedTodo : t)));
     setEditingId(null);
+    callTodoWebhook("UPDATE", updatedTodo);
   };
 
+  // --- Delete Todo ---
   const deleteTodo = async (id: string) => {
-    await supabase.from("todos").delete().eq("id", id);
+    const { error } = await supabase.from("todos").delete().eq("id", id);
+    if (error) { console.error("Delete error:", error.message); return; }
+
     setTodos((prev) => prev.filter((t) => t.id !== id));
+    callTodoWebhook("DELETE", { id } as Todo);
   };
 
-  // --- Chatbot ---
+  // --- Chatbot Send ---
   const handleSendMessage = async () => {
     if (!chatInput.trim() || !user) return;
 
     const userMessage = { sender: "user" as const, text: chatInput };
     setChatMessages((prev) => [...prev, userMessage]);
-
     const currentInput = chatInput;
     setChatInput("");
 
     try {
+      // Call N8N production webhook
+      await fetch(CHAT_WEBHOOK_URL_PROD, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: currentInput, user_id: user.id, user_email: user.email }),
+      });
+      // Call N8N test webhook
+      await fetch(CHAT_WEBHOOK_URL_TEST, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: currentInput, user_id: user.id, user_email: user.email }),
+      });
+
+      // Save message to Supabase via internal API
       const res = await fetch("/api/chatbot", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -140,20 +196,24 @@ export default function Home() {
       const data = await res.json();
       setChatMessages((prev) => [...prev, { sender: "bot", text: data.reply || "Sorry, I don't understand." }]);
     } catch (err) {
-      console.error(err);
+      console.error("Chat error:", err);
       setChatMessages((prev) => [...prev, { sender: "bot", text: "Error connecting to bot." }]);
     }
   };
 
-  // --- Auth UI ---
+  // --- Render Auth or App ---
   if (!user) {
     return (
       <main className="min-h-screen flex items-center justify-center bg-gray-900 text-gray-100">
         <div className="bg-slate-800 p-8 rounded-xl shadow-xl w-96 space-y-4">
-          <h1 className="text-2xl font-bold text-indigo-400">{authMode === "login" ? "Login" : "Sign Up"}</h1>
+          <h1 className="text-2xl font-bold text-indigo-400">
+            {authMode === "login" ? "Login" : "Sign Up"}
+          </h1>
           <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full p-2 border border-slate-600 bg-slate-900 rounded-lg" />
           <input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full p-2 border border-slate-600 bg-slate-900 rounded-lg" />
-          <button onClick={authMode === "login" ? signIn : signUp} className="w-full bg-indigo-600 text-white py-2 rounded-lg hover:bg-indigo-700">{authMode === "login" ? "Login" : "Sign Up"}</button>
+          <button onClick={authMode === "login" ? signIn : signUp} className="w-full bg-indigo-600 text-white py-2 rounded-lg hover:bg-indigo-700">
+            {authMode === "login" ? "Login" : "Sign Up"}
+          </button>
           <p className="text-sm text-gray-400 text-center">
             {authMode === "login" ? (
               <>Don&apos;t have an account? <button onClick={() => setAuthMode("signup")} className="text-indigo-400 hover:underline">Sign up</button></>
@@ -165,7 +225,6 @@ export default function Home() {
       </main>
     );
   }
-
   // --- Main App UI ---
   return (
     <main className="min-h-screen bg-gray-900 text-gray-100 p-8 flex flex-col items-center">
