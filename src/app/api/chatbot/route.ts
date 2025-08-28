@@ -41,16 +41,15 @@ export async function POST(req: NextRequest) {
       });
 
       if (n8nRes.ok) {
-        const n8nData = await n8nRes.json();
-        botReply = n8nData.reply || "I'm not sure how to respond to that.";
-      } else {
-        console.error("n8n error:", await n8nRes.text());
-      }
-    } catch (err) {
-      console.error("n8n fetch error:", err);
-      botReply = "I'm having trouble connecting to my processing service.";
-    }
+  const n8nData = await n8nRes.json();
 
+  // Support both array output (JSON node) and object output
+  if (Array.isArray(n8nData) && n8nData[0]?.json) {
+    botReply = n8nData[0].json.reply || n8nData[0].json.confirmation || botReply;
+  } else if (n8nData.reply) {
+    botReply = n8nData.reply;
+  }
+}
     // 3️⃣ Store bot response
     const { error: botMsgError } = await supabaseAdmin
       .from("chat_messages")
