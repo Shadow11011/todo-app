@@ -33,18 +33,21 @@ export default function Home() {
   const [editTitle, setEditTitle] = useState("");
   const [editDescription, setEditDescription] = useState("");
 
-  // --- Chat State ---
+  // --- Chatbot State ---
   const [chatOpen, setChatOpen] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [useTestWebhook, setUseTestWebhook] = useState(true);
 
-  // --- Webhook URLs ---
-  const TODO_WEBHOOK_PROD = "https://romantic-pig-hardy.ngrok-free.app/webhook/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277";
-  const TODO_WEBHOOK_TEST = "https://romantic-pig-hardy.ngrok-free.app/webhook-test/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277";
-  const CHAT_WEBHOOK_PROD = "https://romantic-pig-hardy.ngrok-free.app/webhook-test/d287ffa8-984d-486c-a2cd-a2a2de952b13";
-  const CHAT_WEBHOOK_TEST = "https://romantic-pig-hardy.ngrok-free.app/webhook-test/d287ffa8-984d-486c-a2cd-a2a2de952b13";
+  const TODO_WEBHOOK_URL = useTestWebhook
+    ? "https://romantic-pig-hardy.ngrok-free.app/webhook-test/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277"
+    : "https://romantic-pig-hardy.ngrok-free.app/webhook/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277";
 
-  // --- Auth Functions ---
+  const CHATBOT_WEBHOOK_URL = useTestWebhook
+    ? "https://romantic-pig-hardy.ngrok-free.app/webhook-test/d287ffa8-984d-486c-a2cd-a2a2de952b13"
+    : "https://romantic-pig-hardy.ngrok-free.app/webhook/d287ffa8-984d-486c-a2cd-a2a2de952b13";
+
+  // --- Auth functions ---
   const signUp = async () => {
     const { error } = await supabase.auth.signUp({ email, password });
     if (error) alert(error.message);
@@ -69,8 +72,8 @@ export default function Home() {
   // --- Check session on mount ---
   useEffect(() => {
     const getSession = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) setUser(user);
+      const { data } = await supabase.auth.getUser();
+      if (data.user) setUser(data.user);
     };
     getSession();
   }, []);
@@ -78,7 +81,6 @@ export default function Home() {
   // --- Fetch Todos ---
   useEffect(() => {
     if (!user) return;
-
     const fetchTodos = async () => {
       const { data, error } = await supabase
         .from("todos")
@@ -91,26 +93,24 @@ export default function Home() {
     fetchTodos();
   }, [user]);
 
-  // --- Call Todo Webhook ---
+  // --- Webhook helper ---
   const callTodoWebhook = async (action: string, todo: Todo) => {
     try {
-      await fetch(TODO_WEBHOOK_PROD, {
+      await fetch(TODO_WEBHOOK_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action,
           todo,
-          user_id: user?.id,
-          user_email: user?.email,
           timestamp: new Date().toISOString(),
         }),
       });
     } catch (err) {
-      console.error("Todo Webhook error:", err);
+      console.error("Webhook error:", err);
     }
   };
 
-  // --- Add Todo ---
+  // --- Todo CRUD ---
   const handleAddTodo = async (e: FormEvent) => {
     e.preventDefault();
     if (!newTitle.trim() || !user) return;
@@ -120,10 +120,7 @@ export default function Home() {
       .insert([{ title: newTitle, description: newDescription, completed: false, user_id: user.id }])
       .select();
 
-    if (error) {
-      console.error("Insert error:", error.message);
-      return;
-    }
+    if (error) return console.error(error.message);
 
     const newTodo = data[0];
     setTodos((prev) => [newTodo, ...prev]);
@@ -132,51 +129,41 @@ export default function Home() {
     callTodoWebhook("CREATE", newTodo);
   };
 
-  // --- Toggle Todo ---
   const toggleTodo = async (id: string, completed: boolean) => {
     const { error } = await supabase.from("todos").update({ completed: !completed }).eq("id", id);
-    if (error) {
-      console.error("Toggle error:", error.message);
-      return;
-    }
+    if (error) return console.error(error.message);
 
-    const updatedTodo = { ...todos.find((t) => t.id === id), completed: !completed } as Todo;
-    setTodos((prev) => prev.map((t) => (t.id === id ? updatedTodo : t)));
-    callTodoWebhook("TOGGLE", updatedTodo);
+    setTodos((prev) =>
+      prev.map((t) => (t.id === id ? { ...t, completed: !completed } : t))
+    );
+    callTodoWebhook("TOGGLE", todos.find((t) => t.id === id)!);
   };
 
-  // --- Save Edit ---
   const saveEdit = async (id: string) => {
     const { error } = await supabase
       .from("todos")
       .update({ title: editTitle, description: editDescription })
       .eq("id", id);
+    if (error) return console.error(error.message);
 
-    if (error) {
-      console.error("Update error:", error.message);
-      return;
-    }
-
-    const updatedTodo = { ...todos.find((t) => t.id === id), title: editTitle, description: editDescription } as Todo;
-    setTodos((prev) => prev.map((t) => (t.id === id ? updatedTodo : t)));
+    setTodos((prev) =>
+      prev.map((t) => (t.id === id ? { ...t, title: editTitle, description: editDescription } : t))
+    );
     setEditingId(null);
-    callTodoWebhook("UPDATE", updatedTodo);
+    callTodoWebhook("UPDATE", todos.find((t) => t.id === id)!);
   };
 
-  // --- Delete Todo ---
   const deleteTodo = async (id: string) => {
     const { error } = await supabase.from("todos").delete().eq("id", id);
-    if (error) {
-      console.error("Delete error:", error.message);
-      return;
-    }
+    if (error) return console.error(error.message);
+
     setTodos((prev) => prev.filter((t) => t.id !== id));
     callTodoWebhook("DELETE", { id } as Todo);
   };
 
-  // --- Chat Send ---
+  // --- Chatbot send ---
   const handleSendMessage = async () => {
-    if (!chatInput.trim()) return;
+    if (!chatInput.trim() || !user) return;
 
     const userMessage = { sender: "user" as const, text: chatInput };
     setChatMessages((prev) => [...prev, userMessage]);
@@ -185,19 +172,23 @@ export default function Home() {
     setChatInput("");
 
     try {
-      const res = await fetch(CHAT_WEBHOOK_PROD, {
+      const res = await fetch(CHATBOT_WEBHOOK_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: currentInput,
-          user_id: user?.id,
-          user_email: user?.email,
-        }),
+        body: JSON.stringify({ message: currentInput, user_id: user.id, user_email: user.email }),
       });
+
       const data = await res.json();
+
       setChatMessages((prev) => [...prev, { sender: "bot", text: data.reply || "Sorry, I don't understand." }]);
+
+      // Automatically add todo if returned by chatbot
+      if (data.newTodo) {
+        setTodos((prev) => [data.newTodo, ...prev]);
+      }
+
     } catch (err) {
-      console.error("Chat error:", err);
+      console.error(err);
       setChatMessages((prev) => [...prev, { sender: "bot", text: "Error connecting to bot." }]);
     }
   };
@@ -210,16 +201,41 @@ export default function Home() {
           <h1 className="text-2xl font-bold text-indigo-400">
             {authMode === "login" ? "Login" : "Sign Up"}
           </h1>
-          <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full p-2 border border-slate-600 bg-slate-900 rounded-lg"/>
-          <input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full p-2 border border-slate-600 bg-slate-900 rounded-lg"/>
-          <button onClick={authMode === "login" ? signIn : signUp} className="w-full bg-indigo-600 text-white py-2 rounded-lg hover:bg-indigo-700">
+          <input
+            type="email"
+            placeholder="Email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="w-full p-2 border border-slate-600 bg-slate-900 rounded-lg"
+          />
+          <input
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="w-full p-2 border border-slate-600 bg-slate-900 rounded-lg"
+          />
+          <button
+            onClick={authMode === "login" ? signIn : signUp}
+            className="w-full bg-indigo-600 text-white py-2 rounded-lg hover:bg-indigo-700"
+          >
             {authMode === "login" ? "Login" : "Sign Up"}
           </button>
           <p className="text-sm text-gray-400 text-center">
             {authMode === "login" ? (
-              <>Don&apos;t have an account? <button onClick={() => setAuthMode("signup")} className="text-indigo-400 hover:underline">Sign up</button></>
+              <>
+                Don&apos;t have an account?{" "}
+                <button onClick={() => setAuthMode("signup")} className="text-indigo-400 hover:underline">
+                  Sign up
+                </button>
+              </>
             ) : (
-              <>Already have an account? <button onClick={() => setAuthMode("login")} className="text-indigo-400 hover:underline">Login</button></>
+              <>
+                Already have an account?{" "}
+                <button onClick={() => setAuthMode("login")} className="text-indigo-400 hover:underline">
+                  Login
+                </button>
+              </>
             )}
           </p>
         </div>
@@ -232,14 +248,35 @@ export default function Home() {
     <main className="min-h-screen bg-gradient-to-br from-gray-900 via-slate-900 to-black text-gray-100 p-8 flex flex-col items-center">
       <div className="flex justify-between w-full max-w-md mb-6">
         <h1 className="text-3xl font-bold text-indigo-400">Todo App + Chatbot</h1>
-        <button onClick={signOut} className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700">Logout</button>
+        <button onClick={signOut} className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700">
+          Logout
+        </button>
+      </div>
+
+      {/* Toggle test/prod webhook */}
+      <div className="mb-4">
+        <label className="text-gray-300 mr-2">Use Test Webhook:</label>
+        <input type="checkbox" checked={useTestWebhook} onChange={() => setUseTestWebhook(!useTestWebhook)} />
       </div>
 
       {/* Todo Form */}
       <form onSubmit={handleAddTodo} className="space-y-4 bg-slate-800/80 p-6 rounded-2xl shadow-xl max-w-md border border-slate-700">
-        <input type="text" placeholder="Enter title..." value={newTitle} onChange={(e) => setNewTitle(e.target.value)} className="w-full p-2 border border-slate-600 bg-slate-900 text-gray-100 rounded-lg shadow-inner focus:ring focus:ring-indigo-500"/>
-        <textarea placeholder="Enter description..." value={newDescription} onChange={(e) => setNewDescription(e.target.value)} className="w-full p-2 border border-slate-600 bg-slate-900 text-gray-100 rounded-lg shadow-inner focus:ring focus:ring-indigo-500"/>
-        <button type="submit" className="w-full bg-gradient-to-r from-indigo-600 to-purple-700 text-white p-2 rounded-lg shadow-lg hover:scale-105 transition">Add Todo</button>
+        <input
+          type="text"
+          placeholder="Enter title..."
+          value={newTitle}
+          onChange={(e) => setNewTitle(e.target.value)}
+          className="w-full p-2 border border-slate-600 bg-slate-900 text-gray-100 rounded-lg shadow-inner focus:ring focus:ring-indigo-500"
+        />
+        <textarea
+          placeholder="Enter description..."
+          value={newDescription}
+          onChange={(e) => setNewDescription(e.target.value)}
+          className="w-full p-2 border border-slate-600 bg-slate-900 text-gray-100 rounded-lg shadow-inner focus:ring focus:ring-indigo-500"
+        />
+        <button type="submit" className="w-full bg-gradient-to-r from-indigo-600 to-purple-700 text-white p-2 rounded-lg shadow-lg hover:scale-105 transition">
+          Add Todo
+        </button>
       </form>
 
       {/* Todo List */}
@@ -248,11 +285,15 @@ export default function Home() {
           <li key={todo.id} className="p-4 bg-slate-800 rounded-xl shadow-lg border border-slate-700">
             {editingId === todo.id ? (
               <div className="space-y-2">
-                <input type="text" value={editTitle} onChange={(e) => setEditTitle(e.target.value)} className="w-full p-2 border border-slate-600 bg-slate-900 text-gray-100 rounded-lg"/>
-                <textarea value={editDescription} onChange={(e) => setEditDescription(e.target.value)} className="w-full p-2 border border-slate-600 bg-slate-900 text-gray-100 rounded-lg"/>
+                <input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} className="w-full p-2 border border-slate-600 bg-slate-900 text-gray-100 rounded-lg" />
+                <textarea value={editDescription} onChange={(e) => setEditDescription(e.target.value)} className="w-full p-2 border border-slate-600 bg-slate-900 text-gray-100 rounded-lg" />
                 <div className="flex gap-2">
-                  <button onClick={() => saveEdit(todo.id)} className="flex-1 bg-indigo-600 text-white p-2 rounded-lg hover:bg-indigo-700">Save</button>
-                  <button onClick={() => setEditingId(null)} className="flex-1 bg-slate-600 text-white p-2 rounded-lg hover:bg-slate-700">Cancel</button>
+                  <button onClick={() => saveEdit(todo.id)} className="flex-1 bg-indigo-600 text-white p-2 rounded-lg hover:bg-indigo-700">
+                    Save
+                  </button>
+                  <button onClick={() => setEditingId(null)} className="flex-1 bg-slate-600 text-white p-2 rounded-lg hover:bg-slate-700">
+                    Cancel
+                  </button>
                 </div>
               </div>
             ) : (
@@ -262,7 +303,7 @@ export default function Home() {
                   <p className="text-sm text-gray-400">{todo.description}</p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <input type="checkbox" checked={todo.completed} onChange={() => toggleTodo(todo.id, todo.completed)} className="accent-indigo-500"/>
+                  <input type="checkbox" checked={todo.completed} onChange={() => toggleTodo(todo.id, todo.completed)} className="accent-indigo-500" />
                   <button onClick={() => { setEditingId(todo.id); setEditTitle(todo.title); setEditDescription(todo.description); }} className="text-indigo-400 hover:text-indigo-300 text-sm">✎ Edit</button>
                   <button onClick={() => deleteTodo(todo.id)} className="text-red-400 hover:text-red-300 text-sm">🗑 Delete</button>
                 </div>
@@ -284,13 +325,11 @@ export default function Home() {
           </div>
           <div className="flex-1 p-3 overflow-y-auto space-y-2">
             {chatMessages.map((msg, i) => (
-              <div key={i} className={`px-3 py-2 rounded-xl max-w-[75%] animate-fadeIn ${msg.sender === "user" ? "bg-gradient-to-r from-indigo-500 to-purple-600 text-white self-end ml-auto shadow-md" : "bg-slate-700 text-gray-100 shadow-sm"}`}>
-                {msg.text}
-              </div>
+              <div key={i} className={`px-3 py-2 rounded-xl max-w-[75%] animate-fadeIn ${msg.sender === "user" ? "bg-gradient-to-r from-indigo-500 to-purple-600 text-white self-end ml-auto shadow-md" : "bg-slate-700 text-gray-100 shadow-sm"}`}>{msg.text}</div>
             ))}
           </div>
           <div className="p-3 border-t border-slate-700 flex gap-2">
-            <input type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="Type a message..." className="flex-1 p-2 border border-slate-600 bg-slate-800 text-gray-100 rounded-lg shadow-inner focus:ring focus:ring-indigo-500"/>
+            <input type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="Type a message..." className="flex-1 p-2 border border-slate-600 bg-slate-800 text-gray-100 rounded-lg shadow-inner focus:ring focus:ring-indigo-500" />
             <button onClick={handleSendMessage} className="bg-indigo-600 text-white px-4 rounded-lg shadow hover:bg-indigo-700 transition">Send</button>
           </div>
         </div>
