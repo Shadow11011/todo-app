@@ -240,7 +240,7 @@ export default function Home() {
           <p className="text-sm text-gray-400 text-center">
             {authMode === "login" ? (
               <>
-                Don't have an account?{" "}
+                Don&apos;t have an account?{" "}
                 <button onClick={() => setAuthMode("signup")} className="text-indigo-400 hover:underline">
                   Sign up
                 </button>
