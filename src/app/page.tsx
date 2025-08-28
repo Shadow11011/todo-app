@@ -25,22 +25,21 @@ export default function Home() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [isSendingMessage, setIsSendingMessage] = useState(false);
 
-  // --- n8n webhook URLs ---
-const TODO_WEBHOOK_URL = "https://romantic-pig-hardy.ngrok-free.app/webhook-test/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277";
-const CHATBOT_WEBHOOK_URL = "https://romantic-pig-hardy.ngrok-free.app/webhook-test/d287ffa8-984d-486c-a2cd-a2a2de952b13";
-
+  const TODO_WEBHOOK_URL = "https://romantic-pig-hardy.ngrok-free.app/webhook-test/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277";
 
   // --- Auth ---
   const signUp = async () => {
     const { error } = await supabase.auth.signUp({ email, password });
-    if (error) alert(error.message);
-    else alert("Check your email for verification link!");
+    if (error) return alert(error.message);
+    alert("Check your email for verification link!");
   };
 
   const signIn = async () => {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) alert(error.message);
-    else setUser(data.user);
+    if (error) return alert(error.message);
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    if (sessionData.session?.user) setUser(sessionData.session.user);
   };
 
   const signOut = async () => {
@@ -53,11 +52,15 @@ const CHATBOT_WEBHOOK_URL = "https://romantic-pig-hardy.ngrok-free.app/webhook-t
   };
 
   useEffect(() => {
-    const getSession = async () => {
-      const { data } = await supabase.auth.getUser();
-      if (data.user) setUser(data.user);
+    const initAuth = async () => {
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (sessionData.session?.user) setUser(sessionData.session.user);
+
+      supabase.auth.onAuthStateChange((_event, session) => {
+        setUser(session?.user || null);
+      });
     };
-    getSession();
+    initAuth();
   }, []);
 
   useEffect(() => {
@@ -74,20 +77,7 @@ const CHATBOT_WEBHOOK_URL = "https://romantic-pig-hardy.ngrok-free.app/webhook-t
     fetchTodos();
   }, [user]);
 
-  // --- Call n8n Webhook ---
-  const callTodoWebhook = async (action: string, todo: Todo) => {
-    try {
-      await fetch(TODO_WEBHOOK_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, todo, timestamp: new Date().toISOString() }),
-      });
-    } catch (err) {
-      console.error("Todo webhook error:", err);
-    }
-  };
-
-  // --- Todo CRUD ---
+  // --- Todo CRUD + Webhook ---
   const handleAddTodo = async (e: FormEvent) => {
     e.preventDefault();
     if (!newTitle.trim() || !user) return;
@@ -104,83 +94,38 @@ const CHATBOT_WEBHOOK_URL = "https://romantic-pig-hardy.ngrok-free.app/webhook-t
     setNewTitle("");
     setNewDescription("");
 
-    // Send to n8n webhook
-    callTodoWebhook("CREATE", newTodo);
-  };
-
-  const toggleTodo = async (id: string, completed: boolean) => {
-    const { data, error } = await supabase.from("todos").update({ completed: !completed }).eq("id", id).select();
-    if (error) return console.error(error.message);
-
-    const updatedTodo = data[0];
-    setTodos((prev) => prev.map((t) => (t.id === id ? updatedTodo : t)));
-
-    callTodoWebhook("TOGGLE", updatedTodo);
-  };
-
-  const saveEdit = async (id: string) => {
-    const { data, error } = await supabase.from("todos").update({ title: editTitle, description: editDescription }).eq("id", id).select();
-    if (error) return console.error(error.message);
-
-    const updatedTodo = data[0];
-    setTodos((prev) => prev.map((t) => (t.id === id ? updatedTodo : t)));
-    setEditingId(null);
-
-    callTodoWebhook("UPDATE", updatedTodo);
-  };
-
-  const deleteTodo = async (id: string) => {
-    await supabase.from("todos").delete().eq("id", id);
-    setTodos((prev) => prev.filter((t) => t.id !== id));
-
-    callTodoWebhook("DELETE", { id } as Todo);
+    try {
+      await fetch(TODO_WEBHOOK_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "CREATE", todo: newTodo, timestamp: new Date().toISOString() }),
+      });
+    } catch (err) {
+      console.error("Todo webhook error:", err);
+    }
   };
 
   // --- Chatbot ---
   const handleSendMessage = async () => {
     if (!chatInput.trim() || !user || isSendingMessage) return;
 
-    const userMessage = { sender: "user" as const, text: chatInput };
+    const userMessage = { sender: "user", text: chatInput };
     setChatMessages((prev) => [...prev, userMessage]);
     const currentInput = chatInput;
     setChatInput("");
     setIsSendingMessage(true);
 
     try {
-      // Send to local API (route.ts) to store in Supabase and get bot response
       const res = await fetch("/api/chatbot", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          message: currentInput, 
-          user_id: user.id,
-          user_email: user.email
-        }),
+        body: JSON.stringify({ message: currentInput, user_id: user.id, user_email: user.email }),
       });
-      
-      if (!res.ok) {
-        throw new Error(`HTTP error! status: ${res.status}`);
-      }
-      
+
+      if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+
       const data = await res.json();
       setChatMessages((prev) => [...prev, { sender: "bot", text: data.reply || "Sorry, I don't understand." }]);
-      
-      // Also send to n8n webhook for processing (fire and forget)
-      try {
-        await fetch(CHATBOT_WEBHOOK_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ 
-            message: currentInput, 
-            user_id: user.id, 
-            user_email: user.email,
-            bot_response: data.reply
-          }),
-        });
-      } catch (n8nErr) {
-        console.error("n8n webhook error:", n8nErr);
-        // Don't show this error to the user as it's a secondary process
-      }
     } catch (err) {
       console.error("Chat error:", err);
       setChatMessages((prev) => [...prev, { sender: "bot", text: "Error connecting to the chatbot service." }]);
@@ -189,54 +134,27 @@ const CHATBOT_WEBHOOK_URL = "https://romantic-pig-hardy.ngrok-free.app/webhook-t
     }
   };
 
-  // --- If not logged in: show Auth UI ---
+  // --- Render Auth UI ---
   if (!user) {
     return (
       <main className="min-h-screen flex items-center justify-center bg-gray-900 text-gray-100">
         <div className="bg-slate-800 p-8 rounded-xl shadow-xl w-96 space-y-4">
-          <h1 className="text-2xl font-bold text-indigo-400">
-            {authMode === "login" ? "Login" : "Sign Up"}
-          </h1>
-          <input
-            type="email"
-            placeholder="Email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="w-full p-2 border border-slate-600 bg-slate-900 rounded-lg"
-          />
-          <input
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full p-2 border border-slate-600 bg-slate-900 rounded-lg"
-          />
-          <button
-            onClick={authMode === "login" ? signIn : signUp}
-            className="w-full bg-indigo-600 text-white py-2 rounded-lg hover:bg-indigo-700"
-          >
+          <h1 className="text-2xl font-bold text-indigo-400">{authMode === "login" ? "Login" : "Sign Up"}</h1>
+          <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full p-2 border border-slate-600 bg-slate-900 rounded-lg" />
+          <input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full p-2 border border-slate-600 bg-slate-900 rounded-lg" />
+          <button onClick={authMode === "login" ? signIn : signUp} className="w-full bg-indigo-600 text-white py-2 rounded-lg hover:bg-indigo-700">
             {authMode === "login" ? "Login" : "Sign Up"}
           </button>
           <p className="text-sm text-gray-400 text-center">
             {authMode === "login" ? (
               <>
                 Don&apos;t have an account?{" "}
-                <button
-                  onClick={() => setAuthMode("signup")}
-                  className="text-indigo-400 hover:underline"
-                >
-                  Sign up
-                </button>
+                <button onClick={() => setAuthMode("signup")} className="text-indigo-400 hover:underline">Sign up</button>
               </>
             ) : (
               <>
                 Already have an account?{" "}
-                <button
-                  onClick={() => setAuthMode("login")}
-                  className="text-indigo-400 hover:underline"
-                >
-                  Login
-                </button>
+                <button onClick={() => setAuthMode("login")} className="text-indigo-400 hover:underline">Login</button>
               </>
             )}
           </p>
@@ -245,19 +163,13 @@ const CHATBOT_WEBHOOK_URL = "https://romantic-pig-hardy.ngrok-free.app/webhook-t
     );
   }
 
-  // --- If logged in: show Todos + Chat ---
+  // --- Render Todos + Chatbot ---
   return (
     <main className="min-h-screen bg-gradient-to-br from-gray-900 via-slate-900 to-black text-gray-100 p-8 flex flex-col items-center">
       <div className="flex justify-between w-full max-w-md mb-6">
         <h1 className="text-3xl font-bold text-indigo-400">Todo App + Chatbot</h1>
-        <button
-          onClick={signOut}
-          className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700"
-        >
-          Logout
-        </button>
+        <button onClick={signOut} className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700">Logout</button>
       </div>
-
       {/* Todo Form */}
       <form
         onSubmit={handleAddTodo}
