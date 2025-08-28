@@ -4,18 +4,6 @@ import { useState, useEffect, FormEvent, useRef } from "react";
 import { supabase } from "../lib/supabase";
 import { User } from "@supabase/supabase-js";
 
-/*
-  Optional: Run this in Supabase SQL editor if you haven't created the table yet:
-
-  create table if not exists chat_messages (
-    id uuid primary key default gen_random_uuid(),
-    user_id uuid references auth.users not null,
-    sender text not null check (sender in ('user','bot')),
-    text text not null,
-    created_at timestamp with time zone default now()
-  );
-*/
-
 type Todo = {
   id?: string;
   title: string;
@@ -27,10 +15,10 @@ type Todo = {
 
 type ChatMessage = {
   id?: string;
+  user_id?: string;
   sender: "user" | "bot";
   text: string;
   created_at?: string;
-  // supabase row may include user_id, but we don't need to use it in UI
 };
 
 export default function Home() {
@@ -53,16 +41,18 @@ export default function Home() {
   const [chatOpen, setChatOpen] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [useTestWebhook, setUseTestWebhook] = useState(true);
   const chatContainerRef = useRef<HTMLDivElement>(null);
 
-  const TODO_WEBHOOK_URL = useTestWebhook
-    ? "https://romantic-pig-hardy.ngrok-free.app/webhook-test/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277"
-    : "https://romantic-pig-hardy.ngrok-free.app/webhook/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277";
+  // Placeholder visibility/fade state
+  const [showPlaceholder, setShowPlaceholder] = useState<boolean>(true);
+  const [placeholderFading, setPlaceholderFading] = useState<boolean>(false);
 
-  const CHATBOT_WEBHOOK_URL = useTestWebhook
-    ? "https://romantic-pig-hardy.ngrok-free.app/webhook-test/d287ffa8-984d-486c-a2cd-a2a2de952b13"
-    : "https://romantic-pig-hardy.ngrok-free.app/webhook/d287ffa8-984d-486c-a2cd-a2a2de952b13";
+  // Track the last message id so we animate only the most-recent message once
+  const [lastMessageId, setLastMessageId] = useState<string | null>(null);
+
+  // PRODUCTION webhook URLs (no test URL)
+  const TODO_WEBHOOK_URL = "https://romantic-pig-hardy.ngrok-free.app/webhook/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277";
+  const CHATBOT_WEBHOOK_URL = "https://romantic-pig-hardy.ngrok-free.app/webhook/d287ffa8-984d-486c-a2cd-a2a2de952b13";
 
   // Auto-scroll chat to bottom when new messages are added
   useEffect(() => {
@@ -70,6 +60,25 @@ export default function Home() {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
   }, [chatMessages]);
+
+  // Fade placeholder out when first message arrives, remove after animation.
+  useEffect(() => {
+    // if chat becomes non-empty -> fade out then remove
+    if (chatMessages.length > 0 && showPlaceholder) {
+      setPlaceholderFading(true); // start fade
+      const t = setTimeout(() => {
+        setShowPlaceholder(false); // remove from DOM after fade
+        setPlaceholderFading(false);
+      }, 300); // should match duration-300
+      return () => clearTimeout(t);
+    }
+
+    // if chat becomes empty -> show placeholder immediately
+    if (chatMessages.length === 0 && !showPlaceholder) {
+      setShowPlaceholder(true);
+      setPlaceholderFading(false);
+    }
+  }, [chatMessages.length, showPlaceholder]);
 
   // --- Auth functions ---
   const signUp = async () => {
@@ -89,12 +98,16 @@ export default function Home() {
 
   const signOut = async () => {
     await supabase.auth.signOut();
-    // Clear local state only — DB stays so messages persist across devices.
+    // Clear local UI state only; DB remains for next login or other devices.
     setUser(null);
     setTodos([]);
     setChatMessages([]);
     setChatInput("");
     setChatOpen(false);
+    // Reset placeholder state for next session
+    setShowPlaceholder(true);
+    setPlaceholderFading(false);
+    setLastMessageId(null);
   };
 
   // --- Check session on mount ---
@@ -122,9 +135,12 @@ export default function Home() {
     fetchTodos();
   }, [user]);
 
-  // --- Fetch Chat Messages on login (Supabase) ---
+  // --- Realtime and Fetch Chat Messages on login ---
   useEffect(() => {
     if (!user) return;
+
+    let channel: any = null;
+    let isMounted = true;
 
     const fetchChats = async () => {
       const { data, error } = await supabase
@@ -135,13 +151,54 @@ export default function Home() {
 
       if (error) {
         console.error("Error fetching chat messages:", error.message);
-      } else {
-        // data is an array of rows: { id, user_id, sender, text, created_at }
+      } else if (isMounted) {
         setChatMessages((data as ChatMessage[]) || []);
+        // optionally animate last message from fetch:
+        const last = (data as ChatMessage[])?.[data.length - 1];
+        if (last?.id) setLastMessageId(last.id);
       }
     };
 
     fetchChats();
+
+    // Setup realtime subscription so that messages inserted by n8n/other clients appear instantly.
+    // We dedupe inserts by checking message id before pushing to state.
+    try {
+      channel = supabase.channel(`public:chat_messages:user=${user.id}`)
+        .on(
+          "postgres_changes",
+          { event: "INSERT", schema: "public", table: "chat_messages", filter: `user_id=eq.${user.id}` },
+          (payload) => {
+            const newRow: ChatMessage = payload.new;
+            // Deduplicate: only append if we don't already have this id
+            setChatMessages((prev) => {
+              if (!newRow?.id) {
+                // if no id for some reason, append (rare)
+                return [...prev, newRow];
+              }
+              const exists = prev.some((m) => m.id === newRow.id);
+              if (exists) return prev;
+              // set last message id so we animate it
+              setLastMessageId(newRow.id);
+              return [...prev, newRow];
+            });
+          }
+        )
+        .subscribe();
+    } catch (e) {
+      console.error("Realtime subscription error:", e);
+    }
+
+    return () => {
+      isMounted = false;
+      if (channel) {
+        try {
+          supabase.removeChannel(channel);
+        } catch (e) {
+          // ignore if removeChannel not available
+        }
+      }
+    };
   }, [user]);
 
   // --- Webhook helper for todos (unchanged) ---
@@ -161,7 +218,7 @@ export default function Home() {
     }
   };
 
-  // --- Todo CRUD ---
+  // --- Todo CRUD (unchanged except using .select() to get inserted rows) ---
   const handleAddTodo = async (e: FormEvent) => {
     e.preventDefault();
     if (!newTitle.trim() || !user) return;
@@ -225,7 +282,7 @@ export default function Home() {
     setTodoToDelete(null);
   };
 
-  // --- Chatbot send (Supabase persistence + webhook integration) ---
+  // --- Chatbot send (Supabase persistence + webhook integration, using inserted rows) ---
   const handleSendMessage = async () => {
     if (!chatInput.trim() || !user) return;
 
@@ -233,7 +290,7 @@ export default function Home() {
     setChatInput("");
 
     try {
-      // 1) Insert the user's message into Supabase and get the inserted row
+      // 1) Insert the user's message into Supabase and use the returned row for UI (prevents needing to rely on realtime to show it)
       const { data: insertedUser, error: userInsertError } = await supabase
         .from("chat_messages")
         .insert([{ user_id: user.id, sender: "user", text: currentInput }])
@@ -242,13 +299,19 @@ export default function Home() {
 
       if (userInsertError) {
         console.error("Error inserting user message:", userInsertError.message);
-        // still show optimistic message locally
+        // optimistic fallback
         setChatMessages((prev) => [...prev, { sender: "user", text: currentInput }]);
       } else {
-        setChatMessages((prev) => [...prev, insertedUser as ChatMessage]);
+        // if realtime later sends same id, dedupe will stop duplication
+        setChatMessages((prev) => {
+          if (insertedUser?.id && prev.some((m) => m.id === insertedUser.id)) return prev;
+          // animate the user message we just inserted
+          if (insertedUser?.id) setLastMessageId(insertedUser.id);
+          return [...prev, insertedUser as ChatMessage];
+        });
       }
 
-      // 2) Call chatbot webhook
+      // 2) Call chatbot webhook (external bot)
       const res = await fetch(CHATBOT_WEBHOOK_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -257,7 +320,7 @@ export default function Home() {
 
       const data = await res.json();
 
-      // 3) Enrich bot reply and insert into Supabase
+      // 3) Save bot reply to Supabase (so DB is the source of truth / n8n can pick it up, too)
       const botText: string = data.reply || "Sorry, I don't understand.";
       const { data: insertedBot, error: botInsertError } = await supabase
         .from("chat_messages")
@@ -269,7 +332,12 @@ export default function Home() {
         console.error("Error inserting bot message:", botInsertError.message);
         setChatMessages((prev) => [...prev, { sender: "bot", text: botText }]);
       } else {
-        setChatMessages((prev) => [...prev, insertedBot as ChatMessage]);
+        setChatMessages((prev) => {
+          if (insertedBot?.id && prev.some((m) => m.id === insertedBot.id)) return prev;
+          // animate the bot message we just inserted
+          if (insertedBot?.id) setLastMessageId(insertedBot.id);
+          return [...prev, insertedBot as ChatMessage];
+        });
       }
 
       // 4) If webhook returned a newTodo, enrich and save to todos table
@@ -290,7 +358,6 @@ export default function Home() {
           console.error("Error inserting todo from bot:", todoError.message);
         } else if (todoInserted?.[0]) {
           setTodos((prev) => [todoInserted[0], ...prev]);
-          // Optionally notify your todo webhook that a todo was created by bot
           callTodoWebhook("CREATE_BY_BOT", todoInserted[0]);
         }
       }
@@ -298,7 +365,6 @@ export default function Home() {
       console.error("Chat send error:", err);
 
       const errorMsgText = "Error connecting to bot.";
-      // Insert error message to DB and update UI
       try {
         const { data: insertedErrMsg, error: errInsertError } = await supabase
           .from("chat_messages")
@@ -310,7 +376,11 @@ export default function Home() {
           console.error("Error inserting error message:", errInsertError.message);
           setChatMessages((prev) => [...prev, { sender: "bot", text: errorMsgText }]);
         } else {
-          setChatMessages((prev) => [...prev, insertedErrMsg as ChatMessage]);
+          setChatMessages((prev) => {
+            if (insertedErrMsg?.id && prev.some((m) => m.id === insertedErrMsg.id)) return prev;
+            if (insertedErrMsg?.id) setLastMessageId(insertedErrMsg.id);
+            return [...prev, insertedErrMsg as ChatMessage];
+          });
         }
       } catch (e) {
         console.error("Fatal error saving err msg:", e);
@@ -319,7 +389,7 @@ export default function Home() {
     }
   };
 
-  // --- Auth UI ---
+  // --- UI ---
   if (!user) {
     return (
       <main className="min-h-screen flex items-center justify-center bg-gray-900 text-gray-100">
@@ -369,9 +439,16 @@ export default function Home() {
     );
   }
 
-  // --- Main App UI ---
   return (
     <main className="min-h-screen bg-gradient-to-br from-gray-900 via-slate-900 to-black text-gray-100 p-8 flex flex-col items-center">
+      {/* small style block for fadeInUp animation */}
+      <style>{`
+        @keyframes fadeInUp {
+          from { opacity: 0; transform: translateY(6px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+      `}</style>
+
       <div className="flex justify-between w-full max-w-md mb-6">
         <h1 className="text-3xl font-bold text-indigo-400">Todo App + Chatbot</h1>
         <button onClick={signOut} className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700">
@@ -379,11 +456,7 @@ export default function Home() {
         </button>
       </div>
 
-      {/* Toggle test/prod webhook */}
-      <div className="mb-4">
-        <label className="text-gray-300 mr-2">Use Test Webhook:</label>
-        <input type="checkbox" checked={useTestWebhook} onChange={() => setUseTestWebhook(!useTestWebhook)} />
-      </div>
+      {/* (test toggle removed; production webhook used) */}
 
       {/* Todo Form */}
       <form onSubmit={handleAddTodo} className="space-y-4 bg-slate-800/80 p-6 rounded-2xl shadow-xl max-w-md border border-slate-700">
@@ -469,23 +542,47 @@ export default function Home() {
             <span className="font-semibold">Chatbot</span>
             <button onClick={() => setChatOpen(false)} className="hover:text-gray-300">✖</button>
           </div>
-          <div 
-            ref={chatContainerRef}
-            className="flex-1 p-3 overflow-y-auto space-y-2"
-          >
-            {chatMessages.map((msg, i) => (
-              <div key={msg.id ?? i} className={`px-3 py-2 rounded-xl max-w-[75%] animate-fadeIn ${msg.sender === "user" ? "bg-gradient-to-r from-indigo-500 to-purple-600 text-white self-end ml-auto shadow-md" : "bg-slate-700 text-gray-100 shadow-sm"}`}>{msg.text}</div>
-            ))}
+
+          {/* Chat container (relative so placeholder overlay can be absolute) */}
+          <div className="relative flex-1 p-3 overflow-y-auto">
+            {/* Placeholder gradient when chat is empty — fades with soft animation */}
+            {showPlaceholder && (
+              <div
+                aria-hidden
+                className={`absolute inset-0 flex items-center justify-center pointer-events-none transition-opacity duration-300 ease-out transform
+                  ${placeholderFading ? "opacity-0 scale-95" : "opacity-100 scale-100"}`}
+              >
+                <div className="w-56 h-20 rounded-xl bg-gradient-to-br from-indigo-700 via-purple-700 to-transparent opacity-80 flex items-center justify-center text-gray-100 text-sm">
+                  Start the conversation — say "help" or ask anything
+                </div>
+              </div>
+            )}
+
+            <div ref={chatContainerRef} className="space-y-2">
+              {chatMessages.map((msg, i) => {
+                const animate = msg.id && msg.id === lastMessageId;
+                return (
+                  <div
+                    key={msg.id ?? i}
+                    style={animate ? { animation: "fadeInUp 300ms ease-out" } : undefined}
+                    className={`px-3 py-2 rounded-xl max-w-[75%] ${msg.sender === "user" ? "bg-gradient-to-r from-indigo-500 to-purple-600 text-white self-end ml-auto shadow-md" : "bg-slate-700 text-gray-100 shadow-sm"}`}
+                  >
+                    {msg.text}
+                  </div>
+                );
+              })}
+            </div>
           </div>
+
           <div className="p-3 border-t border-slate-700 flex gap-2">
-            <input 
-              type="text" 
-              value={chatInput} 
-              onChange={(e) => setChatInput(e.target.value)} 
-              placeholder="Type a message..." 
-              className="flex-1 p-2 border border-slate-600 bg-slate-800 text-gray-100 rounded-lg shadow-inner focus:ring focus:ring-indigo-500" 
+            <input
+              type="text"
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              placeholder="Type a message..."
+              className="flex-1 p-2 border border-slate-600 bg-slate-800 text-gray-100 rounded-lg shadow-inner focus:ring focus:ring-indigo-500"
               onKeyPress={(e) => {
-                if (e.key === 'Enter') {
+                if (e.key === "Enter") {
                   e.preventDefault();
                   handleSendMessage();
                 }
