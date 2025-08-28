@@ -114,7 +114,7 @@ export default function Home() {
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "chat_messages", filter: `user_id=eq.${user.id}` },
         (payload: RealtimePostgresChangesPayload<ChatMessage>) => {
-          const newRow: ChatMessage = payload.new;
+            if (!payload.new || !payload.new.sender || !payload.new.text || !payload.new.user_id) return;
           setChatMessages((prev) => {
             if (prev.find((m) => m.id === newRow.id)) return prev;
             return [...prev, newRow];
