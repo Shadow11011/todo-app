@@ -4,29 +4,15 @@ import { useState, useEffect, FormEvent } from "react";
 import { supabase } from "../lib/supabase";
 import { User } from "@supabase/supabase-js";
 
-// --- Types ---
-type Todo = {
-  id: string;
-  title: string;
-  description: string;
-  completed: boolean;
-  user_id?: string;
-  created_at?: string;
-};
+type Todo = { id: string; title: string; description: string; completed: boolean; user_id?: string; created_at?: string };
+type ChatMessage = { sender: "user" | "bot"; text: string };
 
-type ChatMessage = {
-  sender: "user" | "bot";
-  text: string;
-};
-
-export default function Page() {
-  // --- Auth State ---
+export default function Home() {
   const [user, setUser] = useState<User | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
 
-  // --- Todo State ---
   const [todos, setTodos] = useState<Todo[]>([]);
   const [newTitle, setNewTitle] = useState("");
   const [newDescription, setNewDescription] = useState("");
@@ -34,18 +20,15 @@ export default function Page() {
   const [editTitle, setEditTitle] = useState("");
   const [editDescription, setEditDescription] = useState("");
 
-  // --- Chatbot State ---
   const [chatOpen, setChatOpen] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
-  // --- Webhook URLs ---
-  const TODO_WEBHOOK_URL =
-    "http://localhost:5678/webhook/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277";
-  const CHATBOT_WEBHOOK_URL =
-    "http://localhost:5678/webhook/d287ffa8-984d-486c-a2cd-a2a2de952b13";
+  // --- n8n webhook URLs ---
+  const TODO_WEBHOOK_URL = "http://localhost:5678/webhook/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277";
+  const CHATBOT_WEBHOOK_URL = "http://localhost:5678/webhook-test/d287ffa8-984d-486c-a2cd-a2a2de952b13";
 
-  // --- Auth functions ---
+  // --- Auth ---
   const signUp = async () => {
     const { error } = await supabase.auth.signUp({ email, password });
     if (error) alert(error.message);
@@ -53,10 +36,7 @@ export default function Page() {
   };
 
   const signIn = async () => {
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) alert(error.message);
     else setUser(data.user);
   };
@@ -70,18 +50,14 @@ export default function Page() {
     setChatOpen(false);
   };
 
-  // --- Check session on mount ---
   useEffect(() => {
     const getSession = async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (user) setUser(user);
+      const { data } = await supabase.auth.getUser();
+      if (data.user) setUser(data.user);
     };
     getSession();
   }, []);
 
-  // --- Fetch Todos (only if logged in) ---
   useEffect(() => {
     if (!user) return;
     const fetchTodos = async () => {
@@ -90,138 +66,110 @@ export default function Page() {
         .select("*")
         .eq("user_id", user.id)
         .order("created_at", { ascending: false });
-      if (error) console.error("Error fetching todos:", error.message);
+      if (error) console.error(error.message);
       else setTodos(data || []);
     };
     fetchTodos();
   }, [user]);
 
-  // --- Webhook helper ---
+  // --- Call n8n Webhook ---
   const callTodoWebhook = async (action: string, todo: Todo) => {
     try {
       await fetch(TODO_WEBHOOK_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action,
-          todo,
-          timestamp: new Date().toISOString(),
-        }),
+        body: JSON.stringify({ action, todo, timestamp: new Date().toISOString() }),
       });
     } catch (err) {
-      console.error("Webhook error:", err);
+      console.error("Todo webhook error:", err);
     }
   };
 
-  // --- Add Todo ---
+  const callChatbotWebhook = async (message: string) => {
+    try {
+      await fetch(CHATBOT_WEBHOOK_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message, user_id: user?.id, user_email: user?.email }),
+      });
+    } catch (err) {
+      console.error("Chatbot webhook error:", err);
+    }
+  };
+
+  // --- Todo CRUD ---
   const handleAddTodo = async (e: FormEvent) => {
     e.preventDefault();
     if (!newTitle.trim() || !user) return;
 
     const { data, error } = await supabase
       .from("todos")
-      .insert([
-        {
-          title: newTitle,
-          description: newDescription,
-          completed: false,
-          user_id: user.id,
-        },
-      ])
+      .insert([{ title: newTitle, description: newDescription, completed: false, user_id: user.id }])
       .select();
 
-    if (error) {
-      console.error("Insert error:", error.message);
-      return;
-    }
+    if (error) return console.error(error.message);
 
     const newTodo = data[0];
     setTodos((prev) => [newTodo, ...prev]);
     setNewTitle("");
     setNewDescription("");
+
+    // Send to n8n webhook
     callTodoWebhook("CREATE", newTodo);
   };
 
-  // --- Toggle Todo ---
   const toggleTodo = async (id: string, completed: boolean) => {
-    const { error } = await supabase
-      .from("todos")
-      .update({ completed: !completed })
-      .eq("id", id);
-    if (error) {
-      console.error("Toggle error:", error.message);
-      return;
-    }
-    const updatedTodo = {
-      ...todos.find((t) => t.id === id),
-      completed: !completed,
-    } as Todo;
+    const { data, error } = await supabase.from("todos").update({ completed: !completed }).eq("id", id).select();
+    if (error) return console.error(error.message);
+
+    const updatedTodo = data[0];
     setTodos((prev) => prev.map((t) => (t.id === id ? updatedTodo : t)));
+
     callTodoWebhook("TOGGLE", updatedTodo);
   };
 
-  // --- Save Edit ---
   const saveEdit = async (id: string) => {
-    const { error } = await supabase
-      .from("todos")
-      .update({ title: editTitle, description: editDescription })
-      .eq("id", id);
-    if (error) {
-      console.error("Update error:", error.message);
-      return;
-    }
-    const updatedTodo = {
-      ...todos.find((t) => t.id === id),
-      title: editTitle,
-      description: editDescription,
-    } as Todo;
+    const { data, error } = await supabase.from("todos").update({ title: editTitle, description: editDescription }).eq("id", id).select();
+    if (error) return console.error(error.message);
+
+    const updatedTodo = data[0];
     setTodos((prev) => prev.map((t) => (t.id === id ? updatedTodo : t)));
     setEditingId(null);
+
     callTodoWebhook("UPDATE", updatedTodo);
   };
 
-  // --- Delete Todo ---
   const deleteTodo = async (id: string) => {
-    const { error } = await supabase.from("todos").delete().eq("id", id);
-    if (error) {
-      console.error("Delete error:", error.message);
-      return;
-    }
+    await supabase.from("todos").delete().eq("id", id);
     setTodos((prev) => prev.filter((t) => t.id !== id));
+
     callTodoWebhook("DELETE", { id } as Todo);
   };
 
-  // --- Chatbot Send ---
+  // --- Chatbot ---
   const handleSendMessage = async () => {
-    if (!chatInput.trim()) return;
+    if (!chatInput.trim() || !user) return;
 
     const userMessage = { sender: "user" as const, text: chatInput };
     setChatMessages((prev) => [...prev, userMessage]);
-
     const currentInput = chatInput;
     setChatInput("");
 
+    // Send to n8n
+    callChatbotWebhook(currentInput);
+
+    // Send to local API (route.ts) to store in Supabase
     try {
-      const res = await fetch(CHATBOT_WEBHOOK_URL, {
+      const res = await fetch("/api/chatbot", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: currentInput,
-          user_id: user?.id,
-          user_email: user?.email,
-        }),
+        body: JSON.stringify({ message: currentInput, user_id: user.id }),
       });
       const data = await res.json();
-      setChatMessages((prev) => [
-        ...prev,
-        { sender: "bot", text: data.reply || "Sorry, I don't understand." },
-      ]);
+      setChatMessages((prev) => [...prev, { sender: "bot", text: data.reply || "Sorry, I don't understand." }]);
     } catch (err) {
-      console.error("Chat error:", err);
-      setChatMessages((prev) => [
-        ...prev,
-        { sender: "bot", text: "Error connecting to bot." },
-      ]);
+      console.error(err);
+      setChatMessages((prev) => [...prev, { sender: "bot", text: "Error connecting to bot." }]);
     }
   };
 
