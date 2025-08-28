@@ -156,7 +156,7 @@ export default function Home() {
           <button onClick={authMode === "login" ? signIn : signUp} className="w-full bg-indigo-600 text-white py-2 rounded-lg hover:bg-indigo-700">{authMode === "login" ? "Login" : "Sign Up"}</button>
           <p className="text-sm text-gray-400 text-center">
             {authMode === "login" ? (
-              <>Don't have an account? <button onClick={() => setAuthMode("signup")} className="text-indigo-400 hover:underline">Sign up</button></>
+              <>Don&apos;t have an account? <button onClick={() => setAuthMode("signup")} className="text-indigo-400 hover:underline">Sign up</button></>
             ) : (
               <>Already have an account? <button onClick={() => setAuthMode("login")} className="text-indigo-400 hover:underline">Login</button></>
             )}
