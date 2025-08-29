@@ -1,8 +1,18 @@
 "use client";
 
-import { useState, useEffect, FormEvent, useRef } from "react";
+import { useEffect, useState, useRef, FormEvent } from "react";
 import { supabase } from "../lib/supabase";
-import { User, RealtimePostgresChangesPayload } from "@supabase/supabase-js";
+import { User } from "@supabase/supabase-js";
+
+/**
+ * Chat behavior:
+ * - Default: persist chat to localStorage per-user (key = `chat_messages_${user.id}`)
+ * - On send: POST to CHATBOT_WEBHOOK_URL with { sender, message, user_id, created_at }
+ * - Add user message (optimistic) to UI/localStorage, await webhook reply, then add bot reply.
+ * - On logout: clear chat state and localStorage key for that user.
+ *
+ * Optional (commented): how to persist to Supabase for cross-device sync (use sender, created_at, user_id).
+ */
 
 type Todo = {
   id: string;
@@ -14,14 +24,15 @@ type Todo = {
 };
 
 type ChatMessage = {
-  id?: string;
+  id: string; // local id
   sender: "user" | "bot";
-  text: string;
+  message: string; // column name 'message' as you described (or 'text' if your DB uses that)
   user_id: string;
-  created_at?: string;
+  created_at: string; // ISO string
 };
 
 export default function Home() {
+  // --- Auth / todos - keep existing behavior ---
   const [user, setUser] = useState<User | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -35,21 +46,116 @@ export default function Home() {
   const [editDescription, setEditDescription] = useState("");
   const [todoToDelete, setTodoToDelete] = useState<Todo | null>(null);
 
+  // --- Chat state ---
   const [chatOpen, setChatOpen] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const chatContainerRef = useRef<HTMLDivElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement | null>(null);
 
   const TODO_WEBHOOK_URL = "https://romantic-pig-hardy.ngrok-free.app/webhook/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277";
   const CHATBOT_WEBHOOK_URL = "https://romantic-pig-hardy.ngrok-free.app/webhook/d287ffa8-984d-486c-a2cd-a2a2de952b13";
 
+  // helper localStorage key generator (per-user)
+  const storageKeyForUser = (userId: string | undefined | null) =>
+    userId ? `chat_messages_${userId}` : "chat_messages_anonymous";
+
+  // scroll to bottom when messages change
   useEffect(() => {
-    if (chatContainerRef.current) {
-      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
-    }
+    if (!chatContainerRef.current) return;
+    chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
   }, [chatMessages]);
 
-  // --- Auth ---
+  // --- AUTH: get session & subscribe (keeps from your earlier code) ---
+  useEffect(() => {
+    const getSession = async () => {
+      const { data } = await supabase.auth.getUser();
+      if (data?.user) setUser(data.user);
+    };
+    getSession();
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+
+    return () => {
+      if (authListener?.subscription) authListener.subscription.unsubscribe();
+    };
+  }, []);
+
+  // load todos for user (keeps original behavior)
+  useEffect(() => {
+    if (!user) return;
+    const fetchTodos = async () => {
+      const { data, error } = await supabase
+        .from("todos")
+        .select("*")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false });
+      if (error) console.error(error);
+      else setTodos(data || []);
+    };
+    fetchTodos();
+  }, [user]);
+
+  // --- Chat: load from localStorage on user change ---
+  useEffect(() => {
+    // When user changes (login/logout), load their chat from localStorage
+    if (!user) {
+      // Not logged in: keep chat empty (or optionally load anonymous)
+      setChatMessages([]);
+      return;
+    }
+
+    const key = storageKeyForUser(user.id);
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        const parsed = JSON.parse(raw) as ChatMessage[];
+        // Defensive: ensure it's an array and each item has created_at
+        const normalized = (parsed || []).filter(Boolean).map((m) => ({
+          ...m,
+          created_at: m.created_at || new Date().toISOString(),
+        }));
+
+        // Sort by created_at ascending (oldest first) so display order is chronological
+        normalized.sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0));
+        setChatMessages(normalized);
+      } else {
+        setChatMessages([]);
+      }
+    } catch (err) {
+      console.error("Failed to parse chat from localStorage", err);
+      setChatMessages([]);
+    }
+  }, [user]);
+
+  // Save chatMessages to localStorage anytime they change (for current user)
+  useEffect(() => {
+    if (!user) return;
+    const key = storageKeyForUser(user.id);
+    try {
+      localStorage.setItem(key, JSON.stringify(chatMessages));
+    } catch (err) {
+      console.error("Failed to write chat to localStorage", err);
+    }
+  }, [chatMessages, user]);
+
+  // Clear chat on logout (removes the per-user key)
+  const clearChatForCurrentUser = () => {
+    if (!user) {
+      setChatMessages([]);
+      return;
+    }
+    const key = storageKeyForUser(user.id);
+    try {
+      localStorage.removeItem(key);
+    } catch (err) {
+      console.error("Failed to remove chat key", err);
+    }
+    setChatMessages([]);
+  };
+
+  // --- Auth helpers (signUp, signIn, signOut) similar to your previous code ---
   const signUp = async () => {
     const { error } = await supabase.auth.signUp({ email, password });
     if (error) alert(error.message);
@@ -64,85 +170,130 @@ export default function Home() {
 
   const signOut = async () => {
     await supabase.auth.signOut();
+    // clear app state
     setUser(null);
     setTodos([]);
-    setChatMessages([]);
     setChatInput("");
     setChatOpen(false);
+    // clear chat for the just-logged-out user
+    clearChatForCurrentUser();
   };
 
-  useEffect(() => {
-    const getSession = async () => {
-      const { data } = await supabase.auth.getUser();
-      if (data?.user) setUser(data.user);
-    };
-    getSession();
+  // --- Chat send (no DB writes) but send the full payload to your webhook ---
+  const handleSendMessage = async () => {
+    if (!chatInput.trim() || !user) return;
 
-    // keep auth state updated in client session changes
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
+    const now = new Date().toISOString();
+    const userMessage: ChatMessage = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      sender: "user",
+      message: chatInput,
+      user_id: user.id,
+      created_at: now,
+    };
+
+    // Optimistic UI: add user message to state & localStorage immediately
+    setChatMessages((prev) => {
+      const next = [...prev, userMessage].sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+      return next;
     });
+    setChatInput("");
 
-    return () => {
-      // unsubscribe auth listener if present
-      if (listener?.subscription) listener.subscription.unsubscribe();
-    };
-  }, []);
-
-  // --- Fetch Todos ---
-  useEffect(() => {
-    if (!user) return;
-    const fetchTodos = async () => {
-      const { data, error } = await supabase
-        .from("todos")
-        .select("*")
-        .eq("user_id", user.id)
-        .order("created_at", { ascending: false });
-      if (error) console.error(error.message);
-      else setTodos(data || []);
-    };
-    fetchTodos();
-  }, [user]);
-
-  // --- Chat persistence subscription ---
-  useEffect(() => {
-    if (!user) return;
-
-    const fetchChat = async () => {
-      const { data, error } = await supabase
-        .from("chat_messages")
-        .select("*")
-        .eq("user_id", user.id)
-        .order("created_at", { ascending: true });
-      if (!error && data) setChatMessages(data);
-    };
-    fetchChat();
-
-    const subscription = supabase
-      .channel("public:chat_messages")
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "chat_messages", filter: `user_id=eq.${user.id}` },
-        (payload: RealtimePostgresChangesPayload<ChatMessage>) => {
-          // Assert payload.new as ChatMessage so TypeScript recognizes fields
-          const newRow = payload.new as ChatMessage | null;
-          if (!newRow || !newRow.sender || !newRow.text || !newRow.user_id) return;
-
-          setChatMessages((prev) => {
-            // avoid duplicate messages if the same id already exists
-            if (newRow.id && prev.find((m) => m.id === newRow.id)) return prev;
-            return [...prev, newRow];
-          });
+    // POST to webhook with full required fields
+    try {
+      await fetch(CHATBOT_WEBHOOK_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sender: userMessage.sender,
+          message: userMessage.message,
+          user_id: userMessage.user_id,
+          created_at: userMessage.created_at,
+        }),
+      }).then(async (res) => {
+        // try to parse reply (depends on your webhook shape)
+        // Expecting something like { reply: string, newTodo?: {...} }
+        if (!res.ok) {
+          // server error — show bot error message
+          const botError: ChatMessage = {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+            sender: "bot",
+            message: "Error from bot: non-200 response",
+            user_id: user.id,
+            created_at: new Date().toISOString(),
+          };
+          setChatMessages((prev) => [...prev, botError].sort((a, b) => (a.created_at < b.created_at ? -1 : 1)));
+          return;
         }
-      )
-      .subscribe();
 
-    return () => {
-      supabase.removeChannel(subscription);
-    };
-  }, [user]);
+        const data = await res.json().catch(() => null);
 
-  // --- Todo CRUD ---
+        // If your webhook responds with a `reply` field:
+        if (data?.reply) {
+          const botMessage: ChatMessage = {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+            sender: "bot",
+            message: String(data.reply),
+            user_id: user.id,
+            created_at: data.created_at || new Date().toISOString(),
+          };
+          setChatMessages((prev) => [...prev, botMessage].sort((a, b) => (a.created_at < b.created_at ? -1 : 1)));
+
+          // If webhook also created a todo and returned it:
+          if (data.newTodo) {
+            setTodos((prev) => [data.newTodo, ...prev]);
+          }
+        } else {
+          // fallback bot message if webhook didn't return expected field
+          const botMessage: ChatMessage = {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+            sender: "bot",
+            message: "Bot replied but returned no text.",
+            user_id: user.id,
+            created_at: new Date().toISOString(),
+          };
+          setChatMessages((prev) => [...prev, botMessage].sort((a, b) => (a.created_at < b.created_at ? -1 : 1)));
+        }
+      });
+    } catch (err) {
+      console.error("chat webhook error", err);
+      const botMessage: ChatMessage = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        sender: "bot",
+        message: "Error connecting to bot.",
+        user_id: user.id,
+        created_at: new Date().toISOString(),
+      };
+      setChatMessages((prev) => [...prev, botMessage].sort((a, b) => (a.created_at < b.created_at ? -1 : 1)));
+    }
+  };
+
+  // --- Optional: How to persist to Supabase (commented guidance)
+  //
+  // If you want server-side persistence (so chat is available on other devices),
+  // replace the localStorage flow with Supabase inserts + fetch:
+  //
+  // 1) On load (when user changes) fetch messages:
+  // const { data } = await supabase
+  //   .from("chat_messages")
+  //   .select("*")
+  //   .eq("user_id", user.id)
+  //   .order("created_at", { ascending: true });
+  //
+  // 2) To store a message on send:
+  // await supabase
+  //   .from("chat_messages")
+  //   .insert([{ sender: 'user', message: userMessage.message, user_id: user.id, created_at: userMessage.created_at }]);
+  //
+  // 3) Use realtime subscription on `chat_messages` table:
+  // supabase.channel('public:chat_messages').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages', filter: `user_id=eq.${user.id}` }, (payload) => {
+  //   const m = payload.new as any;
+  //   // use m.sender, m.message, m.created_at, m.user_id to push to UI
+  // });
+  //
+  // That way you can determine "which side" by `sender` (bot/user), order by `created_at`, and owner by `user_id`.
+
+  // --- Todo handlers (kept same as before) ---
   const callTodoWebhook = async (action: string, todo: Partial<Todo>) => {
     try {
       await fetch(TODO_WEBHOOK_URL, {
@@ -209,41 +360,7 @@ export default function Home() {
     setTodoToDelete(null);
   };
 
-  // --- Chatbot ---
-  const handleSendMessage = async () => {
-    if (!chatInput.trim() || !user) return;
-
-    const userMessage: ChatMessage = {
-      sender: "user",
-      text: chatInput,
-      user_id: user.id,
-    };
-
-    // Clear local input immediately (UI snappy)
-    setChatInput("");
-
-    // Insert into DB; subscription will append to chatMessages
-    await supabase.from("chat_messages").insert([userMessage]);
-
-    try {
-      const res = await fetch(CHATBOT_WEBHOOK_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: userMessage.text, user_id: user.id, user_email: user.email }),
-      });
-      const data = await res.json();
-      const botMessage: ChatMessage = { sender: "bot", text: data.reply || "Sorry, I don't understand.", user_id: user.id };
-      await supabase.from("chat_messages").insert([botMessage]);
-
-      if (data.newTodo) setTodos((prev) => [data.newTodo, ...prev]);
-    } catch (err) {
-      console.error(err);
-      const botMessage: ChatMessage = { sender: "bot", text: "Error connecting to bot.", user_id: user.id };
-      await supabase.from("chat_messages").insert([botMessage]);
-    }
-  };
-
-  // --- Auth UI ---
+  // --- Render ---
   if (!user) {
     return (
       <main className="min-h-screen flex items-center justify-center bg-gray-900 text-gray-100">
@@ -276,7 +393,6 @@ export default function Home() {
     );
   }
 
-  // --- Main UI ---
   return (
     <main className="min-h-screen bg-gradient-to-br from-gray-900 via-slate-900 to-black text-gray-100 p-8 flex flex-col items-center">
       <div className="flex justify-between w-full max-w-md mb-6">
@@ -359,16 +475,26 @@ export default function Home() {
             <span className="font-semibold">Chatbot</span>
             <button onClick={() => setChatOpen(false)} className="hover:text-gray-300">✖</button>
           </div>
-          <div 
-            ref={chatContainerRef}
-            className="flex-1 p-3 overflow-y-auto space-y-2"
-          >
-            {chatMessages.map((msg) => (
-              <div key={msg.id || Math.random()} className={`px-3 py-2 rounded-xl max-w-[75%] animate-fadeIn ${msg.sender === "user" ? "bg-gradient-to-r from-indigo-500 to-purple-600 text-white self-end ml-auto shadow-md" : "bg-slate-700 text-gray-100 self-start shadow-md"}`}>
-                {msg.text}
-              </div>
-            ))}
+
+          <div ref={chatContainerRef} className="flex-1 p-3 overflow-y-auto space-y-2">
+            {/* ensure chronological order by created_at */}
+            {chatMessages
+              .slice()
+              .sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0))
+              .map((msg) => (
+                <div
+                  key={msg.id}
+                  className={`px-3 py-2 rounded-xl max-w-[75%] animate-fadeIn ${
+                    msg.sender === "user"
+                      ? "bg-gradient-to-r from-indigo-500 to-purple-600 text-white self-end ml-auto shadow-md"
+                      : "bg-slate-700 text-gray-100 self-start shadow-md"
+                  }`}
+                >
+                  {msg.message}
+                </div>
+              ))}
           </div>
+
           <div className="p-3 flex gap-2">
             <input value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="" className="flex-1 p-2 rounded-lg bg-slate-800 text-gray-100 focus:ring focus:ring-indigo-500" onKeyDown={(e) => e.key === "Enter" && handleSendMessage()} />
             <button onClick={handleSendMessage} className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition">Send</button>
