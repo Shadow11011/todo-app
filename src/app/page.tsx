@@ -57,17 +57,42 @@ export default function Home() {
   const [chatMessages, setChatMessages] = useState<LocalMessage[]>([]);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const chatContainerRef = useRef<HTMLDivElement | null>(null);
 
   const TODO_WEBHOOK_URL = "https://romantic-pig-hardy.ngrok-free.app/webhook/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277";
   const CHATBOT_WEBHOOK_URL = "https://romantic-pig-hardy.ngrok-free.app/webhook/d287ffa8-984d-486c-a2cd-a2a2de952b13";
 
-  // scroll to bottom on messages change
+  // Robust auto-scroll helper
+  const scrollToBottom = (smooth = true) => {
+    const el = chatContainerRef.current;
+    if (!el) return;
+    // Use rAF and small timeout to ensure DOM has painted
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        try {
+          if (smooth) {
+            el.scrollTo({ top: el.scrollHeight, behavior: "smooth" as ScrollBehavior });
+          } else {
+            el.scrollTop = el.scrollHeight;
+          }
+        } catch (_) {
+          el.scrollTop = el.scrollHeight;
+        }
+      }, 40);
+    });
+  };
+
+  // scroll to bottom when messages change
   useEffect(() => {
-    if (chatContainerRef.current) {
-      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
-    }
+    scrollToBottom();
   }, [chatMessages]);
+
+  // scroll to bottom when chat opens
+  useEffect(() => {
+    if (chatOpen) scrollToBottom(false);
+  }, [chatOpen]);
 
   // --- Auth: get session & listen for changes ---
   useEffect(() => {
@@ -111,7 +136,6 @@ export default function Home() {
 
     const fetchLatestPage = async () => {
       try {
-        // fetch latest PAGE_SIZE rows (descending) then reverse for chronological display
         const result = await supabase
           .from("chat_messages")
           .select("*")
@@ -166,6 +190,15 @@ export default function Home() {
       rows.reverse();
       setChatMessages((prev) => [...rows, ...prev]);
       setHasMore((data?.length || 0) === PAGE_SIZE);
+
+      // After prepending older messages, keep the view roughly at the same message:
+      // small delay then scroll to earliest new message position (here we scroll a bit so the user sees context)
+      setTimeout(() => {
+        const el = chatContainerRef.current;
+        if (!el) return;
+        // keep scroll near the first previously-visible message by setting to a small offset from top
+        el.scrollTop = Math.min(200, el.scrollHeight);
+      }, 60);
     } catch (err) {
       console.error("Unexpected error loading earlier chat:", err);
     } finally {
@@ -174,8 +207,8 @@ export default function Home() {
   };
 
   // --- Chat: send message workflow (client does NOT insert to Supabase) ---
-  // Shows user's message immediately, then shows bot 'sending...' bubble, calls webhook,
-  // replaces the bot 'sending...' with webhook's returned bot message (prefer botRow if provided).
+  // Shows user's message immediately, then shows bot 'thinking...' bubble, calls webhook,
+  // replaces the bot 'thinking...' with webhook's returned bot message (prefer botRow if provided).
   const handleSendMessage = async () => {
     if (!chatInput.trim() || !user) return;
 
@@ -208,6 +241,9 @@ export default function Home() {
       next.sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0));
       return next;
     });
+
+    // auto-scroll to bottom so user sees the pending bot bubble
+    scrollToBottom();
 
     // clear input right away
     setChatInput("");
@@ -242,6 +278,7 @@ export default function Home() {
           });
           return filtered;
         });
+        scrollToBottom();
         return;
       }
 
@@ -261,6 +298,7 @@ export default function Home() {
           next.sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0));
           return next;
         });
+        scrollToBottom();
         return;
       }
 
@@ -280,6 +318,7 @@ export default function Home() {
               : m
           );
         });
+        scrollToBottom();
         return;
       }
 
@@ -296,6 +335,7 @@ export default function Home() {
         });
         return filtered;
       });
+      scrollToBottom();
     } catch (err) {
       console.error("chat webhook error", err);
       setChatMessages((prev) => {
@@ -310,6 +350,30 @@ export default function Home() {
         });
         return filtered;
       });
+      scrollToBottom();
+    }
+  };
+
+  // --- Clear chat: deletes all chat_messages rows for current user and clears UI ---
+  const clearChat = async () => {
+    if (!user) return;
+    setClearing(true);
+    try {
+      const { error } = await supabase.from("chat_messages").delete().eq("user_id", user.id);
+      if (error) {
+        console.error("Failed to clear chat:", error);
+        setClearing(false);
+        setClearConfirmOpen(false);
+        return;
+      }
+      // Clear UI
+      setChatMessages([]);
+      setClearConfirmOpen(false);
+      setHasMore(false);
+    } catch (err) {
+      console.error("Unexpected error clearing chat:", err);
+    } finally {
+      setClearing(false);
     }
   };
 
@@ -509,8 +573,26 @@ export default function Home() {
       {chatOpen && (
         <div className="fixed bottom-20 right-6 w-80 h-96 bg-slate-900/95 backdrop-blur-md rounded-2xl shadow-2xl flex flex-col border border-slate-700">
           <div className="bg-gradient-to-r from-indigo-600 to-purple-700 text-white p-3 flex justify-between items-center rounded-t-2xl shadow">
-            <span className="font-semibold">Chatbot</span>
-            <button onClick={() => setChatOpen(false)} className="hover:text-gray-300">✖</button>
+            <div className="flex items-center gap-2">
+              <span className="font-semibold">Chatbot</span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              {/* Clear chat button */}
+              <button
+                onClick={() => setClearConfirmOpen(true)}
+                title="Clear chat"
+                className="text-sm bg-slate-800/40 px-2 py-1 rounded hover:bg-slate-800/60"
+                aria-label="Clear chat"
+              >
+                🧹
+              </button>
+
+              {/* Close chat */}
+              <button onClick={() => setChatOpen(false)} className="hover:text-gray-300" title="Close chat" aria-label="Close chat">
+                ✖
+              </button>
+            </div>
           </div>
 
           {/* Load earlier */}
@@ -565,6 +647,44 @@ export default function Home() {
             <button onClick={handleSendMessage} className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition">
               Send
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Clear chat confirmation modal */}
+      {clearConfirmOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-slate-800 p-6 rounded-xl shadow-xl max-w-md w-full mx-4 border border-slate-700">
+            <h3 className="text-xl font-semibold text-gray-100 mb-4">Clear chat</h3>
+            <p className="text-gray-300 mb-6">Are you sure you want to permanently delete all chat messages? This cannot be undone.</p>
+            <div className="flex gap-3 justify-end">
+              <button onClick={() => setClearConfirmOpen(false)} className="px-4 py-2 bg-slate-600 text-white rounded-lg hover:bg-slate-700 transition">
+                Cancel
+              </button>
+              <button onClick={clearChat} className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition" disabled={clearing}>
+                {clearing ? "Clearing..." : "Clear chat"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation for todos */}
+      {todoToDelete && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-slate-800 p-6 rounded-xl shadow-xl max-w-md w-full mx-4 border border-slate-700">
+            <h3 className="text-xl font-semibold text-gray-100 mb-4">Confirm Delete</h3>
+            <p className="text-gray-300 mb-6">
+              Are you sure you want to delete &quot;{todoToDelete.title}&quot;? This action cannot be undone.
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button onClick={cancelDelete} className="px-4 py-2 bg-slate-600 text-white rounded-lg hover:bg-slate-700 transition">
+                Cancel
+              </button>
+              <button onClick={executeDelete} className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition">
+                Delete
+              </button>
+            </div>
           </div>
         </div>
       )}
