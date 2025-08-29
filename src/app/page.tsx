@@ -5,13 +5,12 @@ import { supabase } from "../lib/supabase";
 import { User } from "@supabase/supabase-js";
 
 /**
- * Chat behavior:
- * - Default: persist chat to localStorage per-user (key = `chat_messages_${user.id}`)
- * - On send: POST to CHATBOT_WEBHOOK_URL with { sender, message, user_id, created_at }
- * - Add user message (optimistic) to UI/localStorage, await webhook reply, then add bot reply.
- * - On logout: clear chat state and localStorage key for that user.
- *
- * Optional (commented): how to persist to Supabase for cross-device sync (use sender, created_at, user_id).
+ * Expects chat_messages schema:
+ * id uuid PK default gen_random_uuid()
+ * user_id uuid
+ * message text
+ * created_at timestamptz default now()
+ * sender text ('user' | 'bot')
  */
 
 type Todo = {
@@ -23,21 +22,27 @@ type Todo = {
   created_at?: string;
 };
 
-type ChatMessage = {
-  id: string; // local id
-  sender: "user" | "bot";
-  message: string; // column name 'message' as you described (or 'text' if your DB uses that)
-  user_id: string;
-  created_at: string; // ISO string
+type ChatMessageDB = {
+  id: string;
+  sender: "user" | "bot" | string;
+  message: string;
+  user_id: string | null;
+  created_at: string; // ISO from DB
 };
 
+// Local message that may be optimistic/pending
+type LocalMessage = ChatMessageDB & { pending?: boolean; tempId?: string };
+
+const PAGE_SIZE = 20;
+
 export default function Home() {
-  // --- Auth / todos - keep existing behavior ---
+  // --- Auth & base state ---
   const [user, setUser] = useState<User | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
 
+  // Todos
   const [todos, setTodos] = useState<Todo[]>([]);
   const [newTitle, setNewTitle] = useState("");
   const [newDescription, setNewDescription] = useState("");
@@ -46,26 +51,25 @@ export default function Home() {
   const [editDescription, setEditDescription] = useState("");
   const [todoToDelete, setTodoToDelete] = useState<Todo | null>(null);
 
-  // --- Chat state ---
+  // Chat
   const [chatOpen, setChatOpen] = useState(false);
   const [chatInput, setChatInput] = useState("");
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatMessages, setChatMessages] = useState<LocalMessage[]>([]);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
   const chatContainerRef = useRef<HTMLDivElement | null>(null);
 
   const TODO_WEBHOOK_URL = "https://romantic-pig-hardy.ngrok-free.app/webhook/7c7bbf74-1eee-4b36-a5d2-a83af8e5a277";
   const CHATBOT_WEBHOOK_URL = "https://romantic-pig-hardy.ngrok-free.app/webhook/d287ffa8-984d-486c-a2cd-a2a2de952b13";
 
-  // helper localStorage key generator (per-user)
-  const storageKeyForUser = (userId: string | undefined | null) =>
-    userId ? `chat_messages_${userId}` : "chat_messages_anonymous";
-
-  // scroll to bottom when messages change
+  // scroll to bottom on messages change
   useEffect(() => {
-    if (!chatContainerRef.current) return;
-    chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    }
   }, [chatMessages]);
 
-  // --- AUTH: get session & subscribe (keeps from your earlier code) ---
+  // --- Auth: get session & listen for changes ---
   useEffect(() => {
     const getSession = async () => {
       const { data } = await supabase.auth.getUser();
@@ -82,7 +86,7 @@ export default function Home() {
     };
   }, []);
 
-  // load todos for user (keeps original behavior)
+  // --- Todos: fetch on user change ---
   useEffect(() => {
     if (!user) return;
     const fetchTodos = async () => {
@@ -91,209 +95,229 @@ export default function Home() {
         .select("*")
         .eq("user_id", user.id)
         .order("created_at", { ascending: false });
-      if (error) console.error(error);
-      else setTodos(data || []);
+
+      if (error) {
+        console.error(error.message);
+        setTodos([]);
+      } else {
+        setTodos(data || []);
+      }
     };
     fetchTodos();
   }, [user]);
 
-  // --- Chat: load from localStorage on user change ---
+  // --- Chat: initial paginated fetch (latest PAGE_SIZE messages) on user change ---
   useEffect(() => {
-    // When user changes (login/logout), load their chat from localStorage
     if (!user) {
-      // Not logged in: keep chat empty (or optionally load anonymous)
       setChatMessages([]);
+      setHasMore(false);
       return;
     }
 
-    const key = storageKeyForUser(user.id);
-    try {
-      const raw = localStorage.getItem(key);
-      if (raw) {
-        const parsed = JSON.parse(raw) as ChatMessage[];
-        // Defensive: ensure it's an array and each item has created_at
-        const normalized = (parsed || []).filter(Boolean).map((m) => ({
-          ...m,
-          created_at: m.created_at || new Date().toISOString(),
-        }));
+    const fetchLatestPage = async () => {
+      try {
+        // fetch latest PAGE_SIZE rows (descending) then reverse for chronological display
+        const { data, error } = await supabase
+          .from<ChatMessageDB>("chat_messages")
+          .select("*")
+          .eq("user_id", user.id)
+          .order("created_at", { ascending: false })
+          .limit(PAGE_SIZE);
 
-        // Sort by created_at ascending (oldest first) so display order is chronological
-        normalized.sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0));
-        setChatMessages(normalized);
-      } else {
-        setChatMessages([]);
-      }
-    } catch (err) {
-      console.error("Failed to parse chat from localStorage", err);
-      setChatMessages([]);
-    }
-  }, [user]);
-
-  // Save chatMessages to localStorage anytime they change (for current user)
-  useEffect(() => {
-    if (!user) return;
-    const key = storageKeyForUser(user.id);
-    try {
-      localStorage.setItem(key, JSON.stringify(chatMessages));
-    } catch (err) {
-      console.error("Failed to write chat to localStorage", err);
-    }
-  }, [chatMessages, user]);
-
-  // Clear chat on logout (removes the per-user key)
-  const clearChatForCurrentUser = () => {
-    if (!user) {
-      setChatMessages([]);
-      return;
-    }
-    const key = storageKeyForUser(user.id);
-    try {
-      localStorage.removeItem(key);
-    } catch (err) {
-      console.error("Failed to remove chat key", err);
-    }
-    setChatMessages([]);
-  };
-
-  // --- Auth helpers (signUp, signIn, signOut) similar to your previous code ---
-  const signUp = async () => {
-    const { error } = await supabase.auth.signUp({ email, password });
-    if (error) alert(error.message);
-    else alert("Check your email for verification link!");
-  };
-
-  const signIn = async () => {
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) alert(error.message);
-    else setUser(data.user);
-  };
-
-  const signOut = async () => {
-    await supabase.auth.signOut();
-    // clear app state
-    setUser(null);
-    setTodos([]);
-    setChatInput("");
-    setChatOpen(false);
-    // clear chat for the just-logged-out user
-    clearChatForCurrentUser();
-  };
-
-  // --- Chat send (no DB writes) but send the full payload to your webhook ---
-  const handleSendMessage = async () => {
-    if (!chatInput.trim() || !user) return;
-
-    const now = new Date().toISOString();
-    const userMessage: ChatMessage = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-      sender: "user",
-      message: chatInput,
-      user_id: user.id,
-      created_at: now,
-    };
-
-    // Optimistic UI: add user message to state & localStorage immediately
-    setChatMessages((prev) => {
-      const next = [...prev, userMessage].sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
-      return next;
-    });
-    setChatInput("");
-
-    // POST to webhook with full required fields
-    try {
-      await fetch(CHATBOT_WEBHOOK_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sender: userMessage.sender,
-          message: userMessage.message,
-          user_id: userMessage.user_id,
-          created_at: userMessage.created_at,
-        }),
-      }).then(async (res) => {
-        // try to parse reply (depends on your webhook shape)
-        // Expecting something like { reply: string, newTodo?: {...} }
-        if (!res.ok) {
-          // server error — show bot error message
-          const botError: ChatMessage = {
-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-            sender: "bot",
-            message: "Error from bot: non-200 response",
-            user_id: user.id,
-            created_at: new Date().toISOString(),
-          };
-          setChatMessages((prev) => [...prev, botError].sort((a, b) => (a.created_at < b.created_at ? -1 : 1)));
+        if (error) {
+          console.error("Failed to fetch chat messages:", error);
+          setChatMessages([]);
+          setHasMore(false);
           return;
         }
 
-        const data = await res.json().catch(() => null);
+        const rows = (data || []).map((r) => ({ ...r, pending: false })) as LocalMessage[];
+        rows.reverse();
+        setChatMessages(rows);
+        setHasMore((data?.length || 0) === PAGE_SIZE);
+      } catch (err) {
+        console.error("Unexpected error fetching chat:", err);
+        setChatMessages([]);
+        setHasMore(false);
+      }
+    };
 
-        // If your webhook responds with a `reply` field:
-        if (data?.reply) {
-          const botMessage: ChatMessage = {
-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-            sender: "bot",
-            message: String(data.reply),
-            user_id: user.id,
-            created_at: data.created_at || new Date().toISOString(),
-          };
-          setChatMessages((prev) => [...prev, botMessage].sort((a, b) => (a.created_at < b.created_at ? -1 : 1)));
+    fetchLatestPage();
+  }, [user]);
 
-          // If webhook also created a todo and returned it:
-          if (data.newTodo) {
-            setTodos((prev) => [data.newTodo, ...prev]);
-          }
-        } else {
-          // fallback bot message if webhook didn't return expected field
-          const botMessage: ChatMessage = {
-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-            sender: "bot",
-            message: "Bot replied but returned no text.",
-            user_id: user.id,
-            created_at: new Date().toISOString(),
-          };
-          setChatMessages((prev) => [...prev, botMessage].sort((a, b) => (a.created_at < b.created_at ? -1 : 1)));
-        }
-      });
+  // --- Chat: load earlier (pagination) ---
+  const loadEarlier = async () => {
+    if (!user || chatMessages.length === 0) return;
+    setLoadingMore(true);
+    try {
+      const earliest = chatMessages[0].created_at;
+      const { data, error } = await supabase
+        .from<ChatMessageDB>("chat_messages")
+        .select("*")
+        .eq("user_id", user.id)
+        .lt("created_at", earliest)
+        .order("created_at", { ascending: false })
+        .limit(PAGE_SIZE);
+
+      if (error) {
+        console.error("Failed to load earlier messages:", error);
+        setLoadingMore(false);
+        return;
+      }
+
+      const rows = (data || []).map((r) => ({ ...r, pending: false })) as LocalMessage[];
+      rows.reverse();
+      setChatMessages((prev) => [...rows, ...prev]);
+      setHasMore((data?.length || 0) === PAGE_SIZE);
     } catch (err) {
-      console.error("chat webhook error", err);
-      const botMessage: ChatMessage = {
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-        sender: "bot",
-        message: "Error connecting to bot.",
-        user_id: user.id,
-        created_at: new Date().toISOString(),
-      };
-      setChatMessages((prev) => [...prev, botMessage].sort((a, b) => (a.created_at < b.created_at ? -1 : 1)));
+      console.error("Unexpected error loading earlier chat:", err);
+    } finally {
+      setLoadingMore(false);
     }
   };
 
-  // --- Optional: How to persist to Supabase (commented guidance)
-  //
-  // If you want server-side persistence (so chat is available on other devices),
-  // replace the localStorage flow with Supabase inserts + fetch:
-  //
-  // 1) On load (when user changes) fetch messages:
-  // const { data } = await supabase
-  //   .from("chat_messages")
-  //   .select("*")
-  //   .eq("user_id", user.id)
-  //   .order("created_at", { ascending: true });
-  //
-  // 2) To store a message on send:
-  // await supabase
-  //   .from("chat_messages")
-  //   .insert([{ sender: 'user', message: userMessage.message, user_id: user.id, created_at: userMessage.created_at }]);
-  //
-  // 3) Use realtime subscription on `chat_messages` table:
-  // supabase.channel('public:chat_messages').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages', filter: `user_id=eq.${user.id}` }, (payload) => {
-  //   const m = payload.new as any;
-  //   // use m.sender, m.message, m.created_at, m.user_id to push to UI
-  // });
-  //
-  // That way you can determine "which side" by `sender` (bot/user), order by `created_at`, and owner by `user_id`.
+  // --- Chat: send message workflow (client does NOT insert to Supabase) ---
+  // Shows user's message immediately, then shows bot 'sending...' bubble, calls webhook,
+  // replaces the bot 'sending...' with webhook's returned bot message (prefer botRow if provided).
+  const handleSendMessage = async () => {
+    if (!chatInput.trim() || !user) return;
 
-  // --- Todo handlers (kept same as before) ---
+    const nowIso = new Date().toISOString();
+    // create optimistic user message (immediate)
+    const userLocal: LocalMessage = {
+      id: `local-user-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      sender: "user",
+      message: chatInput,
+      user_id: user.id,
+      created_at: nowIso,
+      pending: false,
+    };
+
+    // create bot pending bubble (optimistic)
+    const botTempId = `temp-bot-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    const botPending: LocalMessage = {
+      id: botTempId,
+      sender: "bot",
+      message: "thinking…", // visual placeholder
+      user_id: user.id,
+      created_at: nowIso, // local timestamp; DB will have server timestamp
+      pending: true,
+      tempId: botTempId,
+    };
+
+    // Add both: user message then bot pending
+    setChatMessages((prev) => {
+      const next = [...prev, userLocal, botPending];
+      next.sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0));
+      return next;
+    });
+
+    // clear input right away
+    setChatInput("");
+
+    // POST to webhook. Include tempId so webhook can return it / relate rows if desired.
+    try {
+      const payload = {
+        temp_id: botTempId, // helpful for exact matching if your webhook returns it
+        sender: "user",
+        message: userLocal.message,
+        user_id: user.id,
+        created_at: userLocal.created_at, // optional; server will set its own timestamp as well
+      };
+
+      const res = await fetch(CHATBOT_WEBHOOK_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        // replace pending with bot error message
+        setChatMessages((prev) => {
+          const filtered = prev.filter((m) => m.id !== botTempId);
+          filtered.push({
+            id: `local-boterr-${Date.now()}`,
+            sender: "bot",
+            message: "Chatbot webhook error.",
+            user_id: user.id,
+            created_at: new Date().toISOString(),
+            pending: false,
+          });
+          return filtered;
+        });
+        return;
+      }
+
+      // Expectation: webhook returns something like:
+      // { reply: "Hi!", botRow?: { id, sender, message, user_id, created_at }, insertedBot?: true, insertedUser?: true }
+      // Preferred: webhook returns the inserted bot row (`botRow`) with id + created_at.
+      const data = await res.json().catch(() => null);
+
+      // If webhook returned botRow, replace pending with the DB row
+      if (data?.botRow) {
+        const botRow = data.botRow as ChatMessageDB;
+        setChatMessages((prev) => {
+          // remove pending bot bubble(s) with same tempId
+          const withoutPending = prev.filter((m) => m.tempId !== botTempId && m.id !== botTempId);
+          // dedupe: do not add if botRow.id already exists
+          if (withoutPending.find((m) => m.id === botRow.id)) return withoutPending;
+          const next = [...withoutPending, { ...botRow, pending: false }];
+          next.sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0));
+          return next;
+        });
+        return;
+      }
+
+      // If webhook returned an immediate reply text but no botRow, still replace pending bubble with the reply text (non-pending)
+      if (data?.reply) {
+        setChatMessages((prev) => {
+          return prev.map((m) =>
+            m.tempId === botTempId || m.id === botTempId
+              ? {
+                  id: `local-bot-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+                  sender: "bot",
+                  message: String(data.reply),
+                  user_id: user.id,
+                  created_at: data.created_at || new Date().toISOString(),
+                  pending: false,
+                }
+              : m
+          );
+        });
+        return;
+      }
+
+      // If webhook returned nothing useful, replace pending with a fallback bot message
+      setChatMessages((prev) => {
+        const filtered = prev.filter((m) => m.tempId !== botTempId && m.id !== botTempId);
+        filtered.push({
+          id: `local-bot-${Date.now()}`,
+          sender: "bot",
+          message: "Bot replied but no content was returned.",
+          user_id: user.id,
+          created_at: new Date().toISOString(),
+          pending: false,
+        });
+        return filtered;
+      });
+    } catch (err) {
+      console.error("chat webhook error", err);
+      setChatMessages((prev) => {
+        const filtered = prev.filter((m) => m.id !== botTempId);
+        filtered.push({
+          id: `local-boterr-${Date.now()}`,
+          sender: "bot",
+          message: "Error connecting to bot.",
+          user_id: user.id,
+          created_at: new Date().toISOString(),
+          pending: false,
+        });
+        return filtered;
+      });
+    }
+  };
+
+  // --- Todo webhook helper & CRUD (kept) ---
   const callTodoWebhook = async (action: string, todo: Partial<Todo>) => {
     try {
       await fetch(TODO_WEBHOOK_URL, {
@@ -316,8 +340,7 @@ export default function Home() {
       .select();
 
     if (error) return console.error(error.message);
-
-    const newTodo = data ? data[0] : null;
+    const newTodo = data?.[0];
     if (newTodo) {
       setTodos((prev) => [newTodo, ...prev]);
       callTodoWebhook("CREATE", newTodo);
@@ -329,19 +352,14 @@ export default function Home() {
   const toggleTodo = async (id: string, completed: boolean) => {
     const { error } = await supabase.from("todos").update({ completed: !completed }).eq("id", id);
     if (error) return console.error(error.message);
-
     setTodos((prev) => prev.map((t) => (t.id === id ? { ...t, completed: !completed } : t)));
     const found = todos.find((t) => t.id === id);
     if (found) callTodoWebhook("TOGGLE", found);
   };
 
   const saveEdit = async (id: string) => {
-    const { error } = await supabase
-      .from("todos")
-      .update({ title: editTitle, description: editDescription })
-      .eq("id", id);
+    const { error } = await supabase.from("todos").update({ title: editTitle, description: editDescription }).eq("id", id);
     if (error) return console.error(error.message);
-
     setTodos((prev) => prev.map((t) => (t.id === id ? { ...t, title: editTitle, description: editDescription } : t)));
     setEditingId(null);
     const found = todos.find((t) => t.id === id);
@@ -358,6 +376,28 @@ export default function Home() {
     setTodos((prev) => prev.filter((t) => t.id !== todoToDelete.id));
     callTodoWebhook("DELETE", { id: todoToDelete.id });
     setTodoToDelete(null);
+  };
+
+  // --- Auth helpers ---
+  const signUp = async () => {
+    const { error } = await supabase.auth.signUp({ email, password });
+    if (error) alert(error.message);
+    else alert("Check your email for verification link!");
+  };
+
+  const signIn = async () => {
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) alert(error.message);
+    else setUser(data.user);
+  };
+
+  const signOut = async () => {
+    await supabase.auth.signOut();
+    setUser(null);
+    setTodos([]);
+    setChatMessages([]); // clear UI on logout
+    setChatInput("");
+    setChatOpen(false);
   };
 
   // --- Render ---
@@ -476,8 +516,19 @@ export default function Home() {
             <button onClick={() => setChatOpen(false)} className="hover:text-gray-300">✖</button>
           </div>
 
+          {/* Load earlier */}
+          <div className="p-2 flex items-center justify-center">
+            {hasMore ? (
+              <button onClick={loadEarlier} disabled={loadingMore} className="text-sm text-indigo-300 hover:underline">
+                {loadingMore ? "Loading..." : "Load earlier messages"}
+              </button>
+            ) : (
+              <span className="text-xs text-gray-500">No earlier messages</span>
+            )}
+          </div>
+
+          {/* Messages */}
           <div ref={chatContainerRef} className="flex-1 p-3 overflow-y-auto space-y-2">
-            {/* ensure chronological order by created_at */}
             {chatMessages
               .slice()
               .sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0))
@@ -490,14 +541,33 @@ export default function Home() {
                       : "bg-slate-700 text-gray-100 self-start shadow-md"
                   }`}
                 >
-                  {msg.message}
+                  <div className="flex items-center gap-2">
+                    <span>{msg.message}</span>
+                    {msg.pending && <span className="text-xs italic opacity-70 ml-2">• sending…</span>}
+                  </div>
+                  <div className="text-[10px] text-gray-400 mt-1">
+                    {new Date(msg.created_at).toLocaleString()}
+                  </div>
                 </div>
               ))}
           </div>
 
           <div className="p-3 flex gap-2">
-            <input value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="" className="flex-1 p-2 rounded-lg bg-slate-800 text-gray-100 focus:ring focus:ring-indigo-500" onKeyDown={(e) => e.key === "Enter" && handleSendMessage()} />
-            <button onClick={handleSendMessage} className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition">Send</button>
+            <input
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              placeholder="Type a message..."
+              className="flex-1 p-2 rounded-lg bg-slate-800 text-gray-100 focus:ring focus:ring-indigo-500"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handleSendMessage();
+                }
+              }}
+            />
+            <button onClick={handleSendMessage} className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition">
+              Send
+            </button>
           </div>
         </div>
       )}
