@@ -86,7 +86,7 @@ export default function Home() {
     };
   }, []);
 
-  // --- Todos: fetch on user change ---
+  // --- Todos: fetch on user change (unchanged) ---
   useEffect(() => {
     if (!user) return;
     const fetchTodos = async () => {
@@ -95,13 +95,8 @@ export default function Home() {
         .select("*")
         .eq("user_id", user.id)
         .order("created_at", { ascending: false });
-
-      if (error) {
-        console.error(error.message);
-        setTodos([]);
-      } else {
-        setTodos(data || []);
-      }
+      if (error) console.error(error.message);
+      else setTodos(data || []);
     };
     fetchTodos();
   }, [user]);
@@ -117,20 +112,21 @@ export default function Home() {
     const fetchLatestPage = async () => {
       try {
         // fetch latest PAGE_SIZE rows (descending) then reverse for chronological display
-        const { data, error } = await supabase
-          .from<ChatMessageDB>("chat_messages")
+        const result = await supabase
+          .from("chat_messages")
           .select("*")
           .eq("user_id", user.id)
           .order("created_at", { ascending: false })
           .limit(PAGE_SIZE);
 
-        if (error) {
-          console.error("Failed to fetch chat messages:", error);
+        if (result.error) {
+          console.error("Failed to fetch chat messages:", result.error);
           setChatMessages([]);
           setHasMore(false);
           return;
         }
 
+        const data = result.data as ChatMessageDB[] | null;
         const rows = (data || []).map((r) => ({ ...r, pending: false })) as LocalMessage[];
         rows.reverse();
         setChatMessages(rows);
@@ -151,20 +147,21 @@ export default function Home() {
     setLoadingMore(true);
     try {
       const earliest = chatMessages[0].created_at;
-      const { data, error } = await supabase
-        .from<ChatMessageDB>("chat_messages")
+      const result = await supabase
+        .from("chat_messages")
         .select("*")
         .eq("user_id", user.id)
         .lt("created_at", earliest)
         .order("created_at", { ascending: false })
         .limit(PAGE_SIZE);
 
-      if (error) {
-        console.error("Failed to load earlier messages:", error);
+      if (result.error) {
+        console.error("Failed to load earlier messages:", result.error);
         setLoadingMore(false);
         return;
       }
 
+      const data = result.data as ChatMessageDB[] | null;
       const rows = (data || []).map((r) => ({ ...r, pending: false })) as LocalMessage[];
       rows.reverse();
       setChatMessages((prev) => [...rows, ...prev]);
@@ -249,8 +246,7 @@ export default function Home() {
       }
 
       // Expectation: webhook returns something like:
-      // { reply: "Hi!", botRow?: { id, sender, message, user_id, created_at }, insertedBot?: true, insertedUser?: true }
-      // Preferred: webhook returns the inserted bot row (`botRow`) with id + created_at.
+      // { reply: "Hi!", botRow?: { id, sender, message, user_id, created_at }, insertedServerSide?: true }
       const data = await res.json().catch(() => null);
 
       // If webhook returned botRow, replace pending with the DB row
@@ -340,6 +336,7 @@ export default function Home() {
       .select();
 
     if (error) return console.error(error.message);
+
     const newTodo = data?.[0];
     if (newTodo) {
       setTodos((prev) => [newTodo, ...prev]);
